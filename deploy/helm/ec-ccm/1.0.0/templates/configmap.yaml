@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ec-ccm-config
+  namespace: {{ .Values.namespace }}
+data:
+  cloud-config.yaml: |
+    [LoadBalancer]
+      enabled=true
+      lb-provider=amphora
+      lb-method=ROUND_ROBIN
+      lb-version=v2
+      cascade-delete=true
+      network-id={{ .Values.cloudConfig.networkId }}
+      subnet-id={{ .Values.cloudConfig.subnetId }}
+      floating-network-id={{ .Values.cloudConfig.floatingNetworkId }}
+      create-monitor=yes
+      monitor-delay=5
+      monitor-timeout=3
+      monitor-max-retries=1
+      monitor-max-retries-down=3
+      max-shared-lb=2
+      manage-security-groups=true
+      [Edgecenter]
+      api-url={{ .Values.cloudConfig.apiUrl }}
+      project-id={{ .Values.cloudConfig.projectId }}
+      region-id={{ .Values.cloudConfig.regionId }}
+      api-token={{ .Values.cloudConfig.apiKey }}
+      cluster-id={{ .Values.cloudConfig.clusterId }}

@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ec-ccm-config
+  namespace: kube-system
+data:
+  cloud-config.yaml: |
+    [LoadBalancer]
+    enabled=true
+    lb-provider=amphora
+    lb-method=ROUND_ROBIN
+    lb-version=v2
+    cascade-delete=true
+    network-id=<network_id>
+    subnet-id=<subnet_id>
+    floating-network-id=<floating_network_id>
+    create-monitor=yes
+    monitor-delay=1m
+    monitor-timeout=30s
+    monitor-max-retries=1
+    monitor-max-retries-down=3
+    max-shared-lb=2
+    manage-security-groups=true
+    [Edgecenter]
+    api-url=<api_url>
+    project-id=<project_id>
+    region-id=<region_id>
+    api-token=<api_key>
+    cluster-id=<cluster_id>

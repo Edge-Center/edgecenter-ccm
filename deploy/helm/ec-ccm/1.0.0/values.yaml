@@ -1,0 +1,17 @@
+namespace: kube-system
+
+image:
+  repository: ghcr.io/edge-center/edgecenter-ccm
+  tag: latest
+  pullPolicy: IfNotPresent
+
+cloudConfig:
+  networkId: "<network_id>"
+  subnetId: "<subnet_id>"
+  floatingNetworkId: "<floating_network_id>"
+  apiUrl: "<api_url>"
+  projectId: "<project_id>"
+  regionId: "<region_id>"
+  apiKey: "<api_key>"
+  clusterId: "<cluster_id>"
+

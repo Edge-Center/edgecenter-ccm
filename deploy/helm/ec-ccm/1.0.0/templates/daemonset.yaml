@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ec-ccm
+  namespace: {{ .Values.namespace }}
+  labels:
+    k8s-app: ec-ccm
+spec:
+  selector:
+    matchLabels:
+      k8s-app: ec-ccm
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        k8s-app: ec-ccm
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      securityContext:
+        runAsUser: 1001
+      tolerations:
+        - key: node-role.kubernetes.io/master
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule
+      priorityClassName: system-node-critical
+      serviceAccountName: ec-ccm
+      containers:
+        - name: edgecenter-cloud-controller-manager
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --cloud-config=/etc/kubernetes/cloud-config.yaml
+            - --cloud-provider=edgecenter
+            - --enable-leader-migration=true
+            - --leader-elect=true
+            - --leader-elect-lease-duration=30s
+            - --leader-elect-renew-deadline=20s
+            - --leader-elect-retry-period=2s
+            - --node-status-update-frequency=5s
+            - --node-monitor-period=5s
+            - --controllers=*,-route
+            - --authorization-always-allow-paths="/metrics"
+            - --secure-port=10258
+            - --v=4
+          ports:
+            - containerPort: 10258
+          volumeMounts:
+            - mountPath: /etc/kubernetes/cloud-config.yaml
+              subPath: cloud-config.yaml
+              name: cloud-config
+              readOnly: true
+          resources:
+            requests:
+              cpu: 200m
+      dnsPolicy: ClusterFirst
+      hostNetwork: true
+      volumes:
+        - name: cloud-config
+          configMap:
+            name: ec-ccm-config

@@ -1,0 +1,67 @@
+name: Publish Helm Chart
+
+on:
+  push:
+    paths:
+      - 'deploy/helm/ec-ccm/**'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Package & Push Changed Helm Charts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.HARBOR_PASSWORD }}" | helm registry login "${{ secrets.HARBOR_ADDR }}" --username "${{ secrets.HARBOR_USER }}" --password-stdin
+
+      - name: Find Changed Chart Directories
+        id: changed
+        shell: bash
+        run: |
+          git fetch --depth=2
+
+          prev_commit=$(git rev-parse HEAD~1 || echo "")
+          curr_commit=$(git rev-parse HEAD)
+
+          echo "Comparing commits: $prev_commit..$curr_commit"
+
+          if [ -z "$prev_commit" ]; then
+            echo "Only one commit found, using HEAD only."
+            changed_dirs=$(git diff-tree --no-commit-id --name-only -r "$curr_commit")
+          else
+            changed_dirs=$(git diff --name-only "$prev_commit" "$curr_commit")
+          fi
+
+          version_dirs=$(echo "$changed_dirs" | grep '^deploy/helm/ec-ccm/v[^/]\+/' | cut -d/ -f1-5 | sort -u || true)
+
+          echo "Changed chart directories:"
+          echo "$version_dirs"
+
+          echo "dirs<<EOF" >> $GITHUB_OUTPUT
+          echo "$version_dirs" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Package & Push Changed Charts
+        if: steps.changed.outputs.dirs != ''
+        run: |
+          mkdir -p packaged
+          echo "${{ steps.changed.outputs.dirs }}" | sed 's/^[[:space:]]*//' | grep '^deploy/helm/ec-ccm/v[^/]\+/' | sed -E 's|(deploy/helm/ec-ccm/v[^/]+).*|\1|' | sort -u | while read chart_dir; do
+            [ -z "$chart_dir" ] && continue
+            echo "📦 Packaging $chart_dir"
+            helm lint "$chart_dir"
+            helm package "$chart_dir" --destination packaged
+            version=$(basename "$chart_dir" | sed 's/^v//')
+            chart_pkg="ec-ccm-$version.tgz"
+            echo "🚀 Pushing $chart_pkg"
+            helm push "packaged/$chart_pkg" oci://${{ secrets.HARBOR_ADDR }}/oci-charts
+          done
