@@ -1,0 +1,16 @@
+namespace: kube-system
+
+image:
+  repository: harbor.mkaas.edgecenter.online/docker/ec-ccm
+  tag: v1.0.1
+  pullPolicy: IfNotPresent
+
+cloudConfig:
+  networkId: "<network_id>"
+  subnetId: "<subnet_id>"
+  floatingNetworkId: "<floating_network_id>"
+  apiUrl: "<api_url>"
+  projectId: "<project_id>"
+  regionId: "<region_id>"
+  apiKey: "<api_key>"
+  clusterId: "<cluster_id>"

@@ -1,0 +1,3 @@
+.idea
+bin
+/deploy/manifests/lb.yaml
