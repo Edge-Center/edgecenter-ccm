@@ -14,4 +14,3 @@ cloudConfig:
   regionId: "<region_id>"
   apiKey: "<api_key>"
   clusterId: "<cluster_id>"
-
