@@ -23,8 +23,8 @@ Currently `edgecenter-cloud-controller-manager` implements:
 
 Run configuration with program arguments:
 ```
---kubeconfig=you-path/kube-config.yaml
---cloud-config=you-path/cloud-config.yaml
+--kubeconfig=manifests/kube-config.yaml
+--cloud-config=manifests/cloud-config.yaml
 --cloud-provider=edgecenter
 --v=4
 ```
