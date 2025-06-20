@@ -19,3 +19,62 @@ Currently `edgecenter-cloud-controller-manager` implements:
 |--------------------|---------------------------------------------|
 | v1.31              | v1.0.0                                      |
 
+## Local Debug
+
+Run configuration with program arguments:
+```
+--kubeconfig=/deploy/manifests/kube-config.yaml
+--cloud-config=/deploy/manifests/cloud-config.yaml
+--cloud-provider=edgecenter
+--v=4
+```
+
+### Example kube-config.yaml
+
+Replace 127.0.0.1 with your cluster fip
+```yaml
+apiVersion: v1
+clusters:
+  - cluster:
+      certificate-authority-data: <certificate-authority-data>
+      server: https://127.0.0.1:6443
+    name: kubernetes
+contexts:
+  - context:
+      cluster: kubernetes
+      user: kubernetes-admin
+    name: kubernetes-admin@kubernetes
+current-context: kubernetes-admin@kubernetes
+kind: Config
+preferences: { }
+users:
+  - name: kubernetes-admin
+    user:
+      client-certificate-data: <client-certificate-data>
+      client-key-data: <client-key-data>
+```
+
+### Example cloud-config.yaml
+
+```yaml
+[ Global ]
+  ca-file=/etc/kubernetes/ca-bundle.crt
+  [LoadBalancer]
+  use-octavia=true
+  network-id=<network-id>
+  subnet-id=<subnet-id>
+  floating-network-id=<floating-network-id>
+  create-monitor=yes
+  monitor-delay=1m
+  monitor-timeout=30s
+  monitor-max-retries=3
+  manage-security-groups=true
+  [BlockStorage]
+  bs-version=v2
+  [Edgecenter]
+  api-url=<api-url>
+  project-id=<project-id>
+  region-id=<region-id>
+  api-token=<api-token>
+  cluster-id=<cluster-id>
+```
