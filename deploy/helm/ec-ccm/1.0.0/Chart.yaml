@@ -1,6 +1,0 @@
-apiVersion: v2
-name: ec-ccm
-description: Edgecenter Cloud Controller Manager
-type: application
-version: 1.0.0
-appVersion: "v1.0.1"
