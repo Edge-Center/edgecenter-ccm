@@ -888,6 +888,26 @@ func applyNodeSecurityGroupIDForLB(
 			continue
 		}
 
+		interfaces, _, err := svc.InterfaceList(ctx, instance.ID)
+
+		if err != nil {
+			return err
+		}
+
+		for _, i := range interfaces {
+			for _, subnet := range i.NetworkDetails.Subnets {
+				if !strings.HasPrefix(subnet.CIDR, "100.") {
+
+					opts.PortsSecurityGroupNames = []edgecloud.PortsSecurityGroupNames{
+						{
+							SecurityGroupNames: []string{securityGroup},
+							PortID:             i.PortID,
+						},
+					}
+				}
+			}
+		}
+
 		_, err = svc.SecurityGroupAssign(ctx, instance.ID, opts)
 		if err != nil {
 			return fmt.Errorf("failed to assign security group %s to instance %s: %w", securityGroup, instance.ID, err)

@@ -4,8 +4,6 @@ github.com/Azure/go-ansiterm v0.0.0-20230124172434-306776ec8161 h1:L/gRVlceqvL25
 github.com/Azure/go-ansiterm v0.0.0-20230124172434-306776ec8161/go.mod h1:xomTg63KZ2rFqZQzSB4Vz2SUXa1BpHTVz9L5PTmPC4E=
 github.com/Edge-Center/edgecentercloud-go v1.2.0 h1:X1AXabufHvcMPcN6rCI3urpjhB8t0L3JG8V/2hwRBag=
 github.com/Edge-Center/edgecentercloud-go v1.2.0/go.mod h1:kmXGtx0lL1ib+SPfJe/uIAyDHamquAvqiftoLSyhxF8=
-github.com/Edge-Center/edgecentercloud-go/v2 v2.1.6 h1:dEWEsV5tCi7Yv9zkoqkY1iBG2BCsfvzWFFMfPceHlN4=
-github.com/Edge-Center/edgecentercloud-go/v2 v2.1.6/go.mod h1:ukw29nT+EKFe+qrPsInTwE9Ok35KC0hUnZ3bKwfIEcg=
 github.com/Edge-Center/edgecentercloud-go/v2 v2.2.2 h1:JbKQIY8kCmKtMWuBjJE6z9PGnuL0t54tZ0/GdWJUiSU=
 github.com/Edge-Center/edgecentercloud-go/v2 v2.2.2/go.mod h1:ukw29nT+EKFe+qrPsInTwE9Ok35KC0hUnZ3bKwfIEcg=
 github.com/NYTimes/gziphandler v1.1.1 h1:ZUDjpQae29j0ryrS0u/B8HZfJBtBQHjqw2rQ2cqUQ3I=
