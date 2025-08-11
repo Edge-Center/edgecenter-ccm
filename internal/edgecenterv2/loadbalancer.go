@@ -68,7 +68,7 @@ const (
 	ServiceAnnotationLoadBalancerFloatingSubnet       = "loadbalancer.edgecenter.com/floating-subnet"                  // nolint
 	ServiceAnnotationLoadBalancerFloatingSubnetID     = "loadbalancer.edgecenter.com/floating-subnet-id"               // nolint
 	ServiceAnnotationLoadBalancerInternal             = "service.beta.kubernetes.io/edgecenter-internal-load-balancer" // nolint
-	ServiceAnnotationFIPCleanUp                       = "loadbalancer.edgecenter.com/floating-cleanup"                 // nolint
+	ServiceAnnotationSaveFloating                     = "loadbalancer.edgecenter.com/save-floating"                    // nolint
 	ServiceAnnotationLoadBalancerClass                = "loadbalancer.edgecenter.com/class"                            // nolint
 	ServiceAnnotationLoadBalancerKeepFloatingIP       = "loadbalancer.edgecenter.com/keep-floatingip"                  // nolint
 	ServiceAnnotationLoadBalancerPortID               = "loadbalancer.edgecenter.com/port-id"                          // nolint
@@ -1960,18 +1960,13 @@ func (l *LbaasV2) EnsureLoadBalancerDeleted(ctx context.Context, clusterName str
 		}
 	}
 
-	internalAnnotation, err := getBoolFromServiceAnnotation(service, ServiceAnnotationLoadBalancerInternal, l.opts.InternalLB)
-	if err != nil {
-		return fmt.Errorf("cant get internal annotation: %w", err)
-	}
-
-	shouldDeleteFIP, err := getBoolFromServiceAnnotation(service, ServiceAnnotationFIPCleanUp, false)
+	shouldSaveFIP, err := getBoolFromServiceAnnotation(service, ServiceAnnotationSaveFloating, false)
 	if err != nil {
 		return fmt.Errorf("cant get internal annotation: %w", err)
 	}
 
 	ingress := service.Status.LoadBalancer.Ingress
-	if !internalAnnotation && shouldDeleteFIP && len(ingress) > 0 {
+	if !shouldSaveFIP && len(ingress) > 0 {
 		for _, ing := range ingress {
 			existingAddr := net.ParseIP(ing.IP)
 			if existingAddr == nil {
