@@ -9,6 +9,7 @@ import (
 	"time"
 
 	edgecenterv2 "ec-ccm/internal/edgecenterv2"
+	"ec-ccm/internal/util/panicutil"
 	"ec-ccm/internal/version"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apiserver/pkg/server/healthz"
@@ -17,8 +18,8 @@ import (
 	"k8s.io/cloud-provider/options"
 	"k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/logs"
-	_ "k8s.io/component-base/metrics/prometheus/restclient" // for client metric registration
-	_ "k8s.io/component-base/metrics/prometheus/version"    // for version metric registration
+	_ "k8s.io/component-base/metrics/prometheus/restclient"
+	_ "k8s.io/component-base/metrics/prometheus/version"
 	"k8s.io/klog/v2"
 
 	"github.com/spf13/cobra"
@@ -30,11 +31,11 @@ func init() {
 	healthz.InstallHandler(mux)
 }
 
-var (
-	versionFlag bool
-)
+var versionFlag bool
 
 func main() {
+	defer panicutil.HandlePanic("main")
+
 	rand.Seed(time.Now().UTC().UnixNano())
 
 	controllerList := []string{"cloud-node", "cloud-node-lifecycle", "service", "route"}
@@ -70,6 +71,8 @@ func main() {
 			}
 		},
 		Run: func(cmd *cobra.Command, args []string) {
+			defer panicutil.HandlePanic("command.Run")
+
 			if versionFlag {
 				version.PrintVersionAndExit()
 			}
