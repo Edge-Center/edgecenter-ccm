@@ -20,6 +20,6 @@ func HandlePanic(name string) {
 
 		logs.FlushLogs()
 
-		os.Exit(2)
+		os.Exit(1)
 	}
 }
