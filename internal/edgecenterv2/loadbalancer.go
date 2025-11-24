@@ -161,12 +161,7 @@ func getListenerForPort(existingListeners []edgecloud.Listener, protocol edgeclo
 }
 
 // Get pool for a listener. A listener always has exactly one pool.
-func getPoolByListenerID(
-	ctx context.Context,
-	client *edgecloud.Client,
-	loadbalancerID, listenerID string,
-	details bool,
-) (*edgecloud.Pool, error) {
+func getPoolByListenerID(ctx context.Context, client *edgecloud.Client, loadbalancerID, listenerID string, details bool) (*edgecloud.Pool, error) {
 	opts := &edgecloud.PoolListOptions{
 		LoadbalancerID: loadbalancerID,
 		ListenerID:     listenerID,
@@ -193,6 +188,29 @@ func getPoolByListenerID(
 func memberExists(members []edgecloud.PoolMember, addr string, port int) bool {
 	for _, member := range members {
 		if member.Address.String() == addr && member.ProtocolPort == port {
+			return true
+		}
+	}
+
+	return false
+}
+
+func membersChanged(current []edgecloud.PoolMember, desired []edgecloud.PoolMemberCreateRequest) bool {
+	if len(current) != len(desired) {
+		return true
+	}
+
+	curMap := map[string]edgecloud.PoolMember{}
+	for _, m := range current {
+		curMap[m.Address.String()] = m
+	}
+
+	for _, d := range desired {
+		cm, ok := curMap[d.Address.String()]
+		if !ok {
+			return true
+		}
+		if cm.ProtocolPort != d.ProtocolPort || cm.SubnetID != d.SubnetID {
 			return true
 		}
 	}
@@ -305,11 +323,7 @@ func compareSecurityGroup(exists edgecloud.SecurityGroupRule, check SecurityGrou
 	return true
 }
 
-func getSecurityGroupRules(
-	ctx context.Context,
-	client *edgecloud.Client,
-	opts SecurityGroupRuleListOpts,
-) ([]edgecloud.SecurityGroupRule, error) {
+func getSecurityGroupRules(ctx context.Context, client *edgecloud.Client, opts SecurityGroupRuleListOpts) ([]edgecloud.SecurityGroupRule, error) {
 	var securityRulesAll []edgecloud.SecurityGroupRule
 	if opts.SecurityGroupID != "" {
 		securityGroup, _, err := client.SecurityGroups.Get(ctx, opts.SecurityGroupID)
@@ -416,12 +430,7 @@ func toListenersProtocol(protocol corev1.Protocol) edgecloud.LoadbalancerListene
 	}
 }
 
-func createNodeSecurityGroupRules(
-	ctx context.Context,
-	client *edgecloud.Client,
-	nodeSecurityGroupID string,
-	port int,
-	protocol corev1.Protocol,
+func createNodeSecurityGroupRules(ctx context.Context, client *edgecloud.Client, nodeSecurityGroupID string, port int, protocol corev1.Protocol,
 	lbSecGroup string,
 	svc *corev1.Service,
 ) error {
@@ -476,13 +485,7 @@ func createNodeSecurityGroupRules(
 	return nil
 }
 
-func (l *LbaasV2) createLoadBalancerWithListeners(
-	ctx context.Context,
-	name string,
-	lbClass *LBClass,
-	ports []corev1.ServicePort,
-	apiService *corev1.Service,
-) (*edgecloud.Loadbalancer, error) {
+func (l *LbaasV2) createLoadBalancerWithListeners(ctx context.Context, name string, lbClass *LBClass, ports []corev1.ServicePort, apiService *corev1.Service) (*edgecloud.Loadbalancer, error) {
 	keepClientIP, err := getBoolFromServiceAnnotation(apiService, ServiceAnnotationLoadBalancerXForwardedFor, false)
 	if err != nil {
 		return nil, err
@@ -860,12 +863,7 @@ func getSubnetIDForLB(ctx context.Context, client *edgecloud.Client, node corev1
 }
 
 // applyNodeSecurityGroupIDForLB associates the security group with all the ports on the nodes.
-func applyNodeSecurityGroupIDForLB(
-	ctx context.Context,
-	svc edgecloud.InstancesService,
-	nodes []*corev1.Node,
-	securityGroup string,
-) error {
+func applyNodeSecurityGroupIDForLB(ctx context.Context, svc edgecloud.InstancesService, nodes []*corev1.Node, securityGroup string) error {
 	opts := &edgecloud.AssignSecurityGroupRequest{Name: securityGroup}
 
 	for _, node := range nodes {
@@ -918,12 +916,7 @@ func applyNodeSecurityGroupIDForLB(
 }
 
 // disassociateSecurityGroupForLB removes the given security group from the instances
-func disassociateSecurityGroupForLB(
-	ctx context.Context,
-	svc edgecloud.InstancesService,
-	securityGroupID string,
-	securityGroupName string,
-) error {
+func disassociateSecurityGroupForLB(ctx context.Context, svc edgecloud.InstancesService, securityGroupID string, securityGroupName string) error {
 	instances, _, err := svc.FilterBySecurityGroup(ctx, securityGroupID)
 	if err != nil {
 		return fmt.Errorf("cannot get instances for security group %s: %w", securityGroupID, err)
@@ -955,11 +948,7 @@ func disassociateSecurityGroupForLB(
 }
 
 // getNodeSecurityGroupIDForLB lists node-security-groups for specific nodes
-func getNodeSecurityGroupIDForLB(
-	ctx context.Context,
-	client *edgecloud.Client,
-	nodes []*corev1.Node,
-) ([]string, error) {
+func getNodeSecurityGroupIDForLB(ctx context.Context, client *edgecloud.Client, nodes []*corev1.Node) ([]string, error) {
 	secGroupIDs := sets.NewString()
 
 	for _, node := range nodes {
@@ -1016,11 +1005,7 @@ func getFloatingNetworkIDForLB(ctx context.Context, client *edgecloud.Client) (s
 	return floatingNetworkIds[0], nil
 }
 
-func (l *LbaasV2) ensureLoadBalancerListeners(
-	ctx context.Context,
-	loadbalancer *edgecloud.Loadbalancer,
-	ports []corev1.ServicePort,
-	apiService *corev1.Service,
+func (l *LbaasV2) ensureLoadBalancerListeners(ctx context.Context, loadbalancer *edgecloud.Loadbalancer, ports []corev1.ServicePort, apiService *corev1.Service,
 	nodes []*corev1.Node,
 ) error {
 	oldListeners, err := getListenersByLoadBalancerID(ctx, l.client, loadbalancer.ID)
@@ -1072,6 +1057,7 @@ func (l *LbaasV2) ensureLoadBalancerListeners(
 			if keepClientIP {
 				listenerProtocol = edgecloud.ListenerProtocolHTTP
 			}
+
 			listenerName := cutString(fmt.Sprintf("%d_%s_listener", portIndex, loadbalancer.Name))
 			listenerCreateOpt := &edgecloud.ListenerCreateRequest{
 				Name:             strings.TrimSuffix(listenerName, "-"),
@@ -1088,13 +1074,50 @@ func (l *LbaasV2) ensureLoadBalancerListeners(
 			}
 
 			klog.V(4).Infof("Creating listener for port %d using protocol: %s", int(port.Port), listenerProtocol)
-
 			listener, err = l.createListener(ctx, listenerCreateOpt)
 			if err != nil {
-				return fmt.Errorf("failed to create listener for loadbalancer %s: %w", loadbalancer.ID, err)
+				return fmt.Errorf("failed to create listener: %w", err)
+			}
+
+			listener, err = l.getListenerByID(ctx, listener.ID)
+			if err != nil {
+				return fmt.Errorf("failed to reload listener %s: %v", listener.ID, err)
 			}
 
 			klog.V(4).Infof("Listener %s created for loadbalancer %s", listener.ID, loadbalancer.ID)
+
+		} else {
+			if timeoutOverrides != nil {
+				updateReq := &edgecloud.ListenerUpdateRequest{}
+				needsUpdate := false
+
+				if !intPtrEqual(listener.TimeoutClientData, timeoutOverrides.TimeoutClientData) {
+					updateReq.TimeoutClientData = timeoutOverrides.TimeoutClientData
+					needsUpdate = true
+				}
+				if !intPtrEqual(listener.TimeoutMemberData, timeoutOverrides.TimeoutMemberData) {
+					updateReq.TimeoutMemberData = timeoutOverrides.TimeoutMemberData
+					needsUpdate = true
+				}
+				if !intPtrEqual(listener.TimeoutMemberConnect, timeoutOverrides.TimeoutMemberConnect) {
+					updateReq.TimeoutMemberConnect = timeoutOverrides.TimeoutMemberConnect
+					needsUpdate = true
+				}
+
+				if needsUpdate {
+					updateReq.Name = listener.Name
+
+					klog.Infof("Updating listener %s timeouts: %+v", listener.ID, updateReq)
+					_, _, err := l.client.Loadbalancers.ListenerUpdate(ctx, listener.ID, updateReq)
+					if err != nil {
+						return fmt.Errorf("failed updating listener %s: %v", listener.ID, err)
+					}
+
+					if _, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, loadbalancer.ID); err != nil {
+						return fmt.Errorf("LB not ACTIVE after listener update: %v", err)
+					}
+				}
+			}
 		}
 
 		// After all ports have been processed, remaining listeners are removed as obsolete.
@@ -1122,140 +1145,90 @@ func (l *LbaasV2) ensureLoadBalancerListeners(
 	return nil
 }
 
-func (l *LbaasV2) ensureLoadBalancerPool(
-	ctx context.Context,
-	loadbalancer *edgecloud.Loadbalancer,
-	listener *edgecloud.Listener,
-	poolName string,
-	port corev1.ServicePort,
+func (l *LbaasV2) getListenerByID(ctx context.Context, id string) (*edgecloud.Listener, error) {
+	listener, _, err := l.client.Loadbalancers.ListenerGet(ctx, id)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return listener, nil
+}
+
+func (l *LbaasV2) ensureLoadBalancerPool(ctx context.Context, lb *edgecloud.Loadbalancer, listener *edgecloud.Listener, poolName string, port corev1.ServicePort,
 	apiService *corev1.Service,
 	persistence *edgecloud.LoadbalancerSessionPersistence,
 	lbMethod edgecloud.LoadbalancerAlgorithm,
 	nodes []*corev1.Node,
 	keepClientIP bool,
 ) (*edgecloud.Pool, error) {
-	pool, err := getPoolByListenerID(ctx, l.client, loadbalancer.ID, listener.ID, true)
+
+	pool, err := getPoolByListenerID(ctx, l.client, lb.ID, listener.ID, true)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, fmt.Errorf("error getting pool for listener %s: %v", listener.ID, err)
+	}
+
+	if pool != nil {
+		if err := l.reconcilePools(ctx, lb, nodes); err != nil {
+			return pool, fmt.Errorf("pool member sync failed: %w", err)
+		}
+		klog.V(4).Infof("Pool %s already exists for listener %s", pool.ID, listener.ID)
+		return pool, nil
+	}
+
+	klog.V(4).Infof("Pool missing for listener %s — creating new pool %s", listener.ID, poolName)
+
+	poolProto := edgecloud.LoadbalancerPoolProtocol(listener.Protocol)
+
+	if keepClientIP {
+		poolProto = edgecloud.LoadbalancerPoolProtocol(edgecloud.ListenerProtocolHTTP)
+	}
+
+	useProxyProtocol, err := getBoolFromServiceAnnotation(apiService, ServiceAnnotationLoadBalancerProxyEnabled, false)
 	if err != nil {
-		if !errors.Is(err, ErrNotFound) {
-			return nil, fmt.Errorf("error getting pool for listener %s: %v", listener.ID, err)
-		}
-		pool = nil
+		return nil, err
+	}
+	if useProxyProtocol && keepClientIP {
+		return nil, fmt.Errorf("annotation %s and %s cannot be used together",
+			ServiceAnnotationLoadBalancerProxyEnabled, ServiceAnnotationLoadBalancerXForwardedFor)
 	}
 
-	if pool == nil {
-		// Use the protocol of the listener
-		poolProto := edgecloud.LoadbalancerPoolProtocol(listener.Protocol)
-
-		useProxyProtocol, err := getBoolFromServiceAnnotation(apiService,
-			ServiceAnnotationLoadBalancerProxyEnabled, false)
-		if err != nil {
-			return nil, err
-		}
-		if useProxyProtocol && keepClientIP {
-			return nil, fmt.Errorf("annotation %s and %s cannot be used together",
-				ServiceAnnotationLoadBalancerProxyEnabled, ServiceAnnotationLoadBalancerXForwardedFor)
-		}
-		if keepClientIP {
-			poolProto = edgecloud.LoadbalancerPoolProtocol(edgecloud.ListenerProtocolHTTP)
-		}
-
-		var healthMonitorOpts *edgecloud.HealthMonitorCreateRequest
-		if l.opts.CreateMonitor {
-			healthMonitorOpts = l.prepareHealthMonitorOpts(port)
-		}
-
-		createOpt := &edgecloud.PoolCreateRequest{
-			LoadbalancerPoolCreateRequest: edgecloud.LoadbalancerPoolCreateRequest{
-				Name:                  poolName,
-				Protocol:              poolProto,
-				LoadbalancerAlgorithm: lbMethod,
-				ListenerID:            listener.ID,
-				HealthMonitor:         healthMonitorOpts,
-				SessionPersistence:    persistence,
-			},
-		}
-
-		klog.V(4).Infof("Creating pool for listener %s using protocol %s", listener.ID, poolProto)
-
-		pool, err = l.createPool(ctx, createOpt)
-		if err != nil {
-			return nil, fmt.Errorf("error creating pool for listener %s: %v", listener.ID, err)
-		}
-		provisioningStatus, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, loadbalancer.ID)
-		if err != nil {
-			return nil, fmt.Errorf("timeout when waiting for loadbalancer to be ACTIVE after creating pool, current provisioning status %s", provisioningStatus)
-		}
-
+	var healthMonitorOpts *edgecloud.HealthMonitorCreateRequest
+	if l.opts.CreateMonitor {
+		healthMonitorOpts = l.prepareHealthMonitorOpts(port)
 	}
 
-	klog.V(4).Infof("Pool created for listener %s: %s", listener.ID, pool.ID)
-
-	members := pool.Members
-
-	for _, node := range nodes {
-		addr, err := nodeAddressForLB(node)
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				// Node failure, do not create member
-				klog.Warningf("Failed to create LB pool member for node %s: %v", node.Name, err)
-				continue
-			}
-			return nil, fmt.Errorf("error getting address for node %s: %v", node.Name, err)
-		}
-
-		if memberExists(members, addr, int(port.NodePort)) {
-			// After all members have been processed, remaining members are deleted as obsolete.
-			members = popMember(members, addr, int(port.NodePort))
-			continue
-		}
-
-		klog.V(4).Infof("Creating member for pool %s", pool.ID)
-
-		member := &edgecloud.PoolMemberCreateRequest{
-			ProtocolPort: int(port.NodePort),
-			Address:      net.ParseIP(addr),
-			SubnetID:     l.opts.SubnetID,
-		}
-
-		err = l.createPoolMember(ctx, pool.ID, member)
-		if err != nil {
-			return nil, fmt.Errorf("error creating LB pool member for node: %s, %v", node.Name, err)
-		}
-
-		provisioningStatus, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, loadbalancer.ID)
-		if err != nil {
-			return nil, fmt.Errorf("timeout when waiting for loadbalancer to be ACTIVE after creating member, current provisioning status %s", provisioningStatus)
-		}
-
-		klog.V(4).Infof("Ensured pool %s has member for %s at %s", pool.ID, node.Name, addr)
+	createOpt := &edgecloud.PoolCreateRequest{
+		LoadbalancerPoolCreateRequest: edgecloud.LoadbalancerPoolCreateRequest{
+			Name:                  poolName,
+			Protocol:              poolProto,
+			LoadbalancerAlgorithm: lbMethod,
+			ListenerID:            listener.ID,
+			HealthMonitor:         healthMonitorOpts,
+			SessionPersistence:    persistence,
+		},
 	}
 
-	// Delete obsolete members for this pool
-	for _, member := range members {
-		klog.V(4).Infof("Deleting obsolete member %s for pool %s address %s", member.ID, pool.ID, member.Address)
+	klog.V(4).Infof("Creating pool for listener %s (protocol=%s, lb_method=%s)",
+		listener.ID, poolProto, lbMethod)
 
-		err = l.deletePoolMember(ctx, pool.ID, member.ID)
-
-		if err != nil {
-			return nil, fmt.Errorf("error deleting obsolete member %s for pool %s address %s: %v", member.ID, pool.ID, member.Address, err)
-		}
-
-		provisioningStatus, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, loadbalancer.ID)
-
-		if err != nil {
-			return nil, fmt.Errorf("timeout when waiting for loadbalancer to be ACTIVE after deleting member, current provisioning status %s", provisioningStatus)
-		}
+	pool, err = l.createPool(ctx, createOpt)
+	if err != nil {
+		return nil, fmt.Errorf("error creating pool for listener %s: %v", listener.ID, err)
 	}
+
+	if _, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, lb.ID); err != nil {
+		return nil, fmt.Errorf(
+			"timeout when waiting for LB ACTIVE after creating pool for listener %s: %v",
+			listener.ID, err)
+	}
+
+	klog.V(4).Infof("Pool %s created for listener %s", pool.ID, listener.ID)
 
 	return pool, nil
-
 }
 
-func (l *LbaasV2) ensureListenerDeleted(
-	ctx context.Context,
-	loadbalancer *edgecloud.Loadbalancer,
-	listener *edgecloud.Listener,
-) error {
+func (l *LbaasV2) ensureListenerDeleted(ctx context.Context, loadbalancer *edgecloud.Loadbalancer, listener *edgecloud.Listener) error {
 	// get pool for listener
 	pool, err := getPoolByListenerID(ctx, l.client, loadbalancer.ID, listener.ID, false)
 	if err != nil {
@@ -1301,15 +1274,11 @@ func (l *LbaasV2) ensureListenerDeleted(
 // a list of regions (from config) and query/create loadbalancers in each region.
 
 // EnsureLoadBalancer creates a new load balancer or updates the existing one.
-func (l *LbaasV2) EnsureLoadBalancer(
-	ctx context.Context,
-	clusterName string,
-	apiService *corev1.Service,
-	nodes []*corev1.Node,
-) (*corev1.LoadBalancerStatus, error) {
+func (l *LbaasV2) EnsureLoadBalancer(ctx context.Context, clusterName string, apiService *corev1.Service, nodes []*corev1.Node) (*corev1.LoadBalancerStatus, error) {
 	serviceName := fmt.Sprintf("%s/%s", apiService.Namespace, apiService.Name)
 
 	klog.V(4).Infof("EnsureLoadBalancer(%s, %s)", clusterName, serviceName)
+
 	if len(nodes) == 0 {
 		return nil, fmt.Errorf("there are no available nodes for LoadBalancer service %s", serviceName)
 	}
@@ -1447,7 +1416,7 @@ func (l *LbaasV2) EnsureLoadBalancer(
 		if lbIP != "" {
 			existingAddr = net.ParseIP(lbIP)
 		}
-		address, err = l.EnsureFloatingIP(ctx, l.client, false, loadbalancer.VipPortID, loadbalancer.VipAddress, existingAddr)
+		address, err = l.EnsureFloatingIP(ctx, l.client, false, loadbalancer.VipPortID, existingAddr)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create floating IP: %v", err)
 		}
@@ -1469,11 +1438,7 @@ func (l *LbaasV2) EnsureLoadBalancer(
 	return status, nil
 }
 
-func (l *LbaasV2) getFloatingIPsByAddr(
-	ctx context.Context,
-	client *edgecloud.Client,
-	addr string,
-) ([]edgecloud.FloatingIP, error) {
+func (l *LbaasV2) getFloatingIPsByAddr(ctx context.Context, client *edgecloud.Client, addr string) ([]edgecloud.FloatingIP, error) {
 	list, _, err := client.Floatingips.List(ctx)
 	if err != nil {
 		return nil, err
@@ -1489,13 +1454,7 @@ func (l *LbaasV2) getFloatingIPsByAddr(
 	return result, nil
 }
 
-func (l *LbaasV2) EnsureFloatingIP(
-	ctx context.Context,
-	client *edgecloud.Client,
-	needDelete bool,
-	portID string,
-	ipAddr, existingFIP net.IP,
-) (net.IP, error) {
+func (l *LbaasV2) EnsureFloatingIP(ctx context.Context, client *edgecloud.Client, needDelete bool, portID string, existingFIP net.IP) (net.IP, error) {
 
 	klog.Info("Ensuring floating IP start")
 
@@ -1578,13 +1537,7 @@ func (l *LbaasV2) EnsureFloatingIP(
 
 // ensureSecurityGroup ensures security group exist for specific loadbalancer service.
 // Creating security group for specific loadbalancer service when it does not exist.
-func (l *LbaasV2) ensureSecurityGroup(
-	ctx context.Context,
-	client *edgecloud.Client,
-	clusterName string,
-	apiService *corev1.Service,
-	nodes []*corev1.Node,
-) error {
+func (l *LbaasV2) ensureSecurityGroup(ctx context.Context, client *edgecloud.Client, clusterName string, apiService *corev1.Service, nodes []*corev1.Node) error {
 	// find node-security-group for service
 	var err error
 	// get service ports
@@ -1690,157 +1643,118 @@ func (l *LbaasV2) ensureSecurityGroup(
 }
 
 // UpdateLoadBalancer updates hosts under the specified load balancer.
-func (l *LbaasV2) UpdateLoadBalancer(ctx context.Context, clusterName string, service *corev1.Service, nodes []*corev1.Node) error {
-	serviceName := fmt.Sprintf("%s/%s", service.Namespace, service.Name)
-	klog.V(4).Infof("UpdateLoadBalancer(%v, %s, %v)", clusterName, serviceName, nodes)
+func (l *LbaasV2) UpdateLoadBalancer(ctx context.Context, clusterName string, svc *corev1.Service, nodes []*corev1.Node) error {
 
-	l.opts.SubnetID = getStringFromServiceAnnotation(service, ServiceAnnotationLoadBalancerSubnetID, l.opts.SubnetID)
-	if len(l.opts.SubnetID) == 0 && len(nodes) > 0 {
-		// Get SubnetID automatically.
-		// The LB needs to be configured with instance addresses on the same subnet, so get SubnetID by one node.
+	klog.V(4).Infof("UpdateLoadBalancer CALLED for %s/%s", svc.Namespace, svc.Name)
+	klog.V(4).Infof("  Ports: %v", svc.Spec.Ports)
+	klog.V(4).Infof("  Nodes: %d", len(nodes))
+
+	l.opts.SubnetID = getStringFromServiceAnnotation(svc, ServiceAnnotationLoadBalancerSubnetID, l.opts.SubnetID)
+	if l.opts.SubnetID == "" && len(nodes) > 0 {
 		subnetID, err := getSubnetIDForLB(ctx, l.client, *nodes[0])
 		if err != nil {
-			klog.Warningf("Failed to find subnet-id for loadbalancer service %s/%s: %v", service.Namespace, service.Name, err)
-			return fmt.Errorf("no subnet-id for service %s/%s : subnet-id not set in cloud provider config, "+
-				"and failed to find subnet-id from Edgecenter: %v", service.Namespace, service.Name, err)
+			return fmt.Errorf("failed determining subnet ID: %v", err)
 		}
 		l.opts.SubnetID = subnetID
 	}
 
-	ports := service.Spec.Ports
-	if len(ports) == 0 {
-		return fmt.Errorf("no ports provided to edgecenter load balancer")
+	if len(svc.Spec.Ports) == 0 {
+		return fmt.Errorf("no ports provided to load balancer")
 	}
 
-	name := l.GetLoadBalancerName(ctx, clusterName, service)
-	legacyName := l.GetLoadBalancerLegacyName(ctx, clusterName, service)
-	loadbalancer, err := getLoadbalancerByName(ctx, l.client, name, legacyName)
+	name := l.GetLoadBalancerName(ctx, clusterName, svc)
+	legacyName := l.GetLoadBalancerLegacyName(ctx, clusterName, svc)
+
+	lb, err := getLoadbalancerByName(ctx, l.client, name, legacyName)
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot lookup LB: %v", err)
 	}
-	if loadbalancer == nil {
-		return fmt.Errorf("loadbalancer does not exist for Service %s", serviceName)
-	}
-
-	// Get all listeners for this loadbalancer, by "port key".
-	type portKey struct {
-		Protocol edgecloud.LoadbalancerListenerProtocol
-		Port     int
-	}
-	var listenerIDs []string
-	lbListeners := make(map[portKey]edgecloud.Listener)
-	allListeners, err := getListenersByLoadBalancerID(ctx, l.client, loadbalancer.ID)
-	if err != nil {
-		return fmt.Errorf("error getting listeners for LB %s: %v", loadbalancer.ID, err)
-	}
-	for _, l := range allListeners {
-		key := portKey{Protocol: l.Protocol, Port: l.ProtocolPort}
-		lbListeners[key] = l
-		listenerIDs = append(listenerIDs, l.ID)
+	if lb == nil {
+		return fmt.Errorf("LB does not exist for service %s/%s", svc.Namespace, svc.Name)
 	}
 
-	// Get all pools for this loadbalancer, by listener ID.
-	lbPools := make(map[string]edgecloud.Pool)
-	for _, listenerID := range listenerIDs {
-		// with details=true we get pool member right from pool struct
-		pool, err := getPoolByListenerID(ctx, l.client, loadbalancer.ID, listenerID, true)
-		if err != nil {
-			return fmt.Errorf("error getting pool for listener %s: %v", listenerID, err)
-		}
-		lbPools[listenerID] = *pool
-	}
+	klog.V(4).Infof("Found LB %s (ID=%s)", lb.Name, lb.ID)
 
-	// Compose Set of member (addresses) that _should_ exist
-	addresses := make(map[string]*corev1.Node)
-	for _, node := range nodes {
-		addr, err := nodeAddressForLB(node)
-		if err != nil {
-			return err
-		}
-		addresses[addr] = node
-	}
-
-	// Check for adding/removing members associated with each port
-	for _, port := range ports {
-		// Get listener associated with this port
-		listener, ok := lbListeners[portKey{
-			Protocol: toListenersProtocol(port.Protocol),
-			Port:     int(port.Port),
-		}]
-		if !ok {
-			return fmt.Errorf("loadbalancer %s does not contain required listener for port %d and protocol %s", loadbalancer.ID, port.Port, port.Protocol)
-		}
-
-		// Get pool associated with this listener
-		pool, ok := lbPools[listener.ID]
-		if !ok {
-			return fmt.Errorf("loadbalancer %s does not contain required pool for listener %s", loadbalancer.ID, listener.ID)
-		}
-
-		members := make(map[string]edgecloud.PoolMember)
-		for _, member := range pool.Members {
-			members[member.Address.String()] = member
-		}
-
-		// Add any new members for this port
-		for addr := range addresses {
-			if member, ok := members[addr]; ok && member.ProtocolPort == int(port.NodePort) {
-				// Already exists, do not create member
-				continue
-			}
-
-			createOpts := &edgecloud.PoolMemberCreateRequest{
-				Address:      net.ParseIP(addr),
-				ProtocolPort: int(port.NodePort),
-				SubnetID:     l.opts.SubnetID,
-			}
-
-			err = l.createPoolMember(ctx, pool.ID, createOpts)
-			if err != nil {
-				return err
-			}
-
-			provisioningStatus, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, loadbalancer.ID)
-			if err != nil {
-				return fmt.Errorf("timeout when waiting for loadbalancer to be ACTIVE after creating member, current provisioning status %s", provisioningStatus)
-			}
-		}
-
-		// Remove any old members for this port
-		for _, member := range members {
-			if _, ok := addresses[member.Address.String()]; ok && member.ProtocolPort == int(port.NodePort) {
-				// Still present, do not delete member
-				continue
-			}
-
-			err = l.deletePoolMember(ctx, pool.ID, member.ID)
-			if err != nil {
-				return err
-			}
-
-			provisioningStatus, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, loadbalancer.ID)
-			if err != nil {
-				return fmt.Errorf("timeout when waiting for loadbalancer to be ACTIVE after deleting member, current provisioning status %s", provisioningStatus)
-			}
-		}
+	if err := l.reconcilePools(ctx, lb, nodes); err != nil {
+		return fmt.Errorf("pool reconciliation failed: %w", err)
 	}
 
 	if l.opts.ManageSecurityGroups {
-		err := l.updateSecurityGroup(ctx, service, nodes)
-		if err != nil {
-			return fmt.Errorf("failed to update Security Group for loadbalancer service %s: %v", serviceName, err)
+		if err := l.updateSecurityGroup(ctx, svc, nodes); err != nil {
+			return fmt.Errorf("security group update failed: %v", err)
 		}
 	}
 
 	return nil
 }
 
+func (l *LbaasV2) reconcilePools(ctx context.Context, lb *edgecloud.Loadbalancer, nodes []*corev1.Node) error {
+	desired := make(map[string]*corev1.Node)
+	for _, n := range nodes {
+		ip, err := nodeAddressForLB(n)
+		if err != nil {
+			return fmt.Errorf("nodeAddressForLB: %v", err)
+		}
+		desired[ip] = n
+	}
+
+	listeners, err := getListenersByLoadBalancerID(ctx, l.client, lb.ID)
+	if err != nil {
+		return fmt.Errorf("failed listing listeners: %v", err)
+	}
+
+	for _, ln := range listeners {
+		klog.V(4).Infof("reconcilePools: listener=%s protocol_port=%d", ln.ID, ln.ProtocolPort)
+
+		pool, err := getPoolByListenerID(ctx, l.client, lb.ID, ln.ID, true)
+		if err != nil {
+			return fmt.Errorf("failed getting pool: %v", err)
+		}
+
+		var desiredMembers []edgecloud.PoolMemberCreateRequest
+
+		for ip := range desired {
+			desiredMembers = append(desiredMembers, edgecloud.PoolMemberCreateRequest{
+				Address:      net.ParseIP(ip),
+				ProtocolPort: ln.ProtocolPort,
+				SubnetID:     l.opts.SubnetID,
+			})
+		}
+
+		if !membersChanged(pool.Members, desiredMembers) {
+			klog.V(4).Infof("Pool %s skipped: no member changes", pool.ID)
+			continue
+		}
+
+		klog.V(4).Infof("Pool %s desired members count = %d", pool.ID, len(desiredMembers))
+
+		updateReq := &edgecloud.PoolUpdateRequest{
+			ID:                    pool.ID,
+			Name:                  pool.Name,
+			Members:               desiredMembers,
+			SessionPersistence:    pool.SessionPersistence,
+			LoadbalancerAlgorithm: pool.LoadbalancerAlgorithm,
+		}
+
+		klog.V(4).Infof("PoolUpdate: %s with %d members", pool.ID, len(updateReq.Members))
+
+		_, _, err = l.client.Loadbalancers.PoolUpdate(ctx, pool.ID, updateReq)
+		if err != nil {
+			return fmt.Errorf("PoolUpdate failed for pool %s: %v", pool.ID, err)
+		}
+
+		if _, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, lb.ID); err != nil {
+			return fmt.Errorf("LB not ACTIVE after PoolUpdate: %v", err)
+		}
+
+		klog.V(4).Infof("Pool %s successfully updated", pool.ID)
+	}
+
+	return nil
+}
+
 // updateSecurityGroup updating security group for specific loadbalancer service.
-func (l *LbaasV2) updateSecurityGroup(
-	ctx context.Context,
-	apiService *corev1.Service,
-	nodes []*corev1.Node,
-) error {
+func (l *LbaasV2) updateSecurityGroup(ctx context.Context, apiService *corev1.Service, nodes []*corev1.Node) error {
 	originalNodeSecurityGroupIDs := l.opts.NodeSecurityGroupIDs
 
 	var err error
@@ -1967,6 +1881,7 @@ func (l *LbaasV2) EnsureLoadBalancerDeleted(ctx context.Context, clusterName str
 	if err != nil {
 		return fmt.Errorf("failed to delete loadbalancer %s: %w", loadbalancer.ID, err)
 	}
+
 	err = waitLoadbalancerDeleted(ctx, l.client, loadbalancer.ID)
 	if err != nil {
 		return fmt.Errorf("failed to delete loadbalancer %s: %w", loadbalancer.ID, err)
@@ -1993,7 +1908,7 @@ func (l *LbaasV2) EnsureLoadBalancerDeleted(ctx context.Context, clusterName str
 				continue
 			}
 
-			_, err := l.EnsureFloatingIP(ctx, l.client, true, loadbalancer.VipPortID, loadbalancer.VipAddress, existingAddr)
+			_, err := l.EnsureFloatingIP(ctx, l.client, true, loadbalancer.VipPortID, existingAddr)
 			if err != nil {
 				klog.V(2).Infof("failed to delete floating ip for loadbalancer service %s: %v", serviceName, err)
 			}
