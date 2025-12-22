@@ -448,6 +448,10 @@ func nodeAddresses(instance *edgecloud.Instance, networkingOpts NetworkingOpts) 
 
 	for _, network := range networks {
 		for _, props := range addresses[network] {
+			if props.Address != nil && strings.HasPrefix(props.Address.String(), "100.") {
+				continue
+			}
+
 			var addressType apiv1.NodeAddressType
 			if props.Type == string(edgecloud.AddressTypeFloating) || network == networkingOpts.PublicNetworkName {
 				addressType = apiv1.NodeExternalIP
