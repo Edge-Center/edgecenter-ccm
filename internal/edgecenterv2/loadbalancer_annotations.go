@@ -2,7 +2,6 @@ package edgecenter
 
 import (
 	"fmt"
-	"strconv"
 	"time"
 
 	edgecloud "github.com/Edge-Center/edgecentercloud-go/v2"
@@ -58,44 +57,6 @@ const (
 	// If the value of ServiceAnnotationLoadBalancerInternal is false, it indicates that we want an external loadbalancer service. Default to false.
 	k8sIngressTag = "k8s_ingress"
 )
-
-type ListenerTimeoutConfig struct {
-	TimeoutClientData    *int
-	TimeoutMemberData    *int
-	TimeoutMemberConnect *int
-}
-
-func parseListenerTimeouts(svc *corev1.Service) (*ListenerTimeoutConfig, error) {
-	getTimeout := func(key string) (*int, error) {
-		if val, ok := svc.Annotations[key]; ok {
-			v, err := strconv.Atoi(val)
-			if err != nil {
-				return nil, fmt.Errorf("invalid value for annotation %q: %w", key, err)
-			}
-			return &v, nil
-		}
-		return nil, nil
-	}
-
-	timeoutClientData, err := getTimeout(ServiceAnnotationLoadBalancerTimeoutClientData)
-	if err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", ServiceAnnotationLoadBalancerTimeoutClientData, err)
-	}
-	timeoutMemberData, err := getTimeout(ServiceAnnotationLoadBalancerTimeoutMemberData)
-	if err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", ServiceAnnotationLoadBalancerTimeoutMemberData, err)
-	}
-	timeoutMemberConnect, err := getTimeout(ServiceAnnotationLoadBalancerTimeoutMemberConnect)
-	if err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", ServiceAnnotationLoadBalancerTimeoutMemberConnect, err)
-	}
-
-	return &ListenerTimeoutConfig{
-		TimeoutClientData:    timeoutClientData,
-		TimeoutMemberData:    timeoutMemberData,
-		TimeoutMemberConnect: timeoutMemberConnect,
-	}, nil
-}
 
 // getStringFromServiceAnnotation searches a given v1.Service for a specific annotationKey and either returns the annotation's value or a specified defaultSetting
 func getStringFromServiceAnnotation(service *corev1.Service, annotationKey string, defaultSetting string) string {

@@ -537,3 +537,11 @@ func isSecurityGroupNotFound(err error) bool {
 
 	return false
 }
+
+func toRuleProtocol(protocol corev1.Protocol) edgecloud.SecurityGroupRuleProtocol {
+	tp := edgecloud.SecurityGroupRuleProtocol(strings.ToLower(string(protocol)))
+	if err := tp.IsValid(); err != nil {
+		return edgecloud.SGRuleProtocolTCP
+	}
+	return tp
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +13,44 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
+
+type ListenerTimeoutConfig struct {
+	TimeoutClientData    *int
+	TimeoutMemberData    *int
+	TimeoutMemberConnect *int
+}
+
+func parseListenerTimeouts(svc *corev1.Service) (*ListenerTimeoutConfig, error) {
+	getTimeout := func(key string) (*int, error) {
+		if val, ok := svc.Annotations[key]; ok {
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return nil, fmt.Errorf("invalid value for annotation %q: %w", key, err)
+			}
+			return &v, nil
+		}
+		return nil, nil
+	}
+
+	timeoutClientData, err := getTimeout(ServiceAnnotationLoadBalancerTimeoutClientData)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", ServiceAnnotationLoadBalancerTimeoutClientData, err)
+	}
+	timeoutMemberData, err := getTimeout(ServiceAnnotationLoadBalancerTimeoutMemberData)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", ServiceAnnotationLoadBalancerTimeoutMemberData, err)
+	}
+	timeoutMemberConnect, err := getTimeout(ServiceAnnotationLoadBalancerTimeoutMemberConnect)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", ServiceAnnotationLoadBalancerTimeoutMemberConnect, err)
+	}
+
+	return &ListenerTimeoutConfig{
+		TimeoutClientData:    timeoutClientData,
+		TimeoutMemberData:    timeoutMemberData,
+		TimeoutMemberConnect: timeoutMemberConnect,
+	}, nil
+}
 
 func (l *LbaasV2) ensureLoadBalancerListeners(ctx context.Context, loadbalancer *edgecloud.Loadbalancer, ports []corev1.ServicePort, apiService *corev1.Service,
 	nodes []*corev1.Node,

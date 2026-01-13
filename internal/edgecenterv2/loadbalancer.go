@@ -501,3 +501,31 @@ func waitLoadbalancerDeleted(ctx context.Context, client *edgecloud.Client, load
 
 	return err
 }
+
+// getSubnetIDForLB returns subnet-id for a specific node
+func getSubnetIDForLB(ctx context.Context, client *edgecloud.Client, node corev1.Node) (string, error) {
+	ipAddress, err := nodeAddressForLB(&node)
+	if err != nil {
+		return "", err
+	}
+
+	instanceID := node.Spec.ProviderID
+	if ind := strings.LastIndex(instanceID, "/"); ind >= 0 {
+		instanceID = instanceID[(ind + 1):]
+	}
+
+	list, _, err := client.Instances.InterfaceList(ctx, instanceID)
+	if err != nil {
+		return "", err
+	}
+
+	for _, intf := range list {
+		for _, fixedIP := range intf.IPAssignments {
+			if fixedIP.IPAddress.String() == ipAddress {
+				return fixedIP.SubnetID, nil
+			}
+		}
+	}
+
+	return "", ErrNotFound
+}

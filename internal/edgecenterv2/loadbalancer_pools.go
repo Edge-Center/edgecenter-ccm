@@ -289,3 +289,28 @@ func getPoolByListenerID(ctx context.Context, client *edgecloud.Client, loadbala
 
 	return &list[0], nil
 }
+
+// The LB needs to be configured with instance addresses on the same
+// subnet as the LB (aka opts.SubnetID). Currently, we're just
+// guessing that the node's InternalIP is the right address.
+// In case no InternalIP can be found, ExternalIP is tried.
+// If neither InternalIP nor ExternalIP can be found an error is
+// returned.
+func nodeAddressForLB(node *corev1.Node) (string, error) {
+	addresses := node.Status.Addresses
+	if len(addresses) == 0 {
+		return "", ErrNoAddressFound
+	}
+
+	allowedAddrTypes := []corev1.NodeAddressType{corev1.NodeInternalIP, corev1.NodeExternalIP}
+
+	for _, allowedAddrType := range allowedAddrTypes {
+		for _, addr := range addresses {
+			if addr.Type == allowedAddrType {
+				return addr.Address, nil
+			}
+		}
+	}
+
+	return "", ErrNoAddressFound
+}
