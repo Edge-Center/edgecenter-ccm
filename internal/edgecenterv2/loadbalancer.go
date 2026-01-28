@@ -362,7 +362,7 @@ func (l *LbaasV2) UpdateLoadBalancer(ctx context.Context, clusterName string, sv
 
 	klog.V(4).Infof("Found LB %s (ID=%s)", lb.Name, lb.ID)
 
-	if err := l.reconcilePools(ctx, lb, nodes); err != nil {
+	if err := l.reconcilePools(ctx, lb, svc, nodes); err != nil {
 		return fmt.Errorf("pool reconciliation failed: %w", err)
 	}
 
