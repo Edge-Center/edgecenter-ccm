@@ -26,7 +26,7 @@ func (l *LbaasV2) ensureLoadBalancerPool(ctx context.Context, lb *edgecloud.Load
 	}
 
 	if pool != nil {
-		if err := l.reconcilePools(ctx, lb, nodes); err != nil {
+		if err := l.reconcilePools(ctx, lb, apiService, nodes); err != nil {
 			return pool, fmt.Errorf("pool member sync failed: %w", err)
 		}
 		klog.V(4).Infof("Pool %s already exists for listener %s", pool.ID, listener.ID)
@@ -82,10 +82,14 @@ func (l *LbaasV2) ensureLoadBalancerPool(ctx context.Context, lb *edgecloud.Load
 
 	klog.V(4).Infof("Pool %s created for listener %s", pool.ID, listener.ID)
 
+	if err := l.reconcilePools(ctx, lb, apiService, nodes); err != nil {
+		return pool, fmt.Errorf("pool member sync failed after create: %w", err)
+	}
+
 	return pool, nil
 }
 
-func (l *LbaasV2) reconcilePools(ctx context.Context, lb *edgecloud.Loadbalancer, nodes []*corev1.Node) error {
+func (l *LbaasV2) reconcilePools(ctx context.Context, lb *edgecloud.Loadbalancer, svc *corev1.Service, nodes []*corev1.Node) error {
 	desired := make(map[string]*corev1.Node)
 	for _, n := range nodes {
 		ip, err := nodeAddressForLB(n)
@@ -100,8 +104,15 @@ func (l *LbaasV2) reconcilePools(ctx context.Context, lb *edgecloud.Loadbalancer
 		return fmt.Errorf("failed listing listeners: %v", err)
 	}
 
-	for _, ln := range listeners {
-		klog.V(4).Infof("reconcilePools: listener=%s protocol_port=%d", ln.ID, ln.ProtocolPort)
+	for i := range listeners {
+		ln := &listeners[i]
+
+		nodePort, err := nodePortForListener(svc, ln)
+		if err != nil {
+			return err
+		}
+
+		klog.V(4).Infof("reconcilePools: listener=%s listener_port=%d nodePort=%d", ln.ID, ln.ProtocolPort, nodePort)
 
 		pool, err := getPoolByListenerID(ctx, l.client, lb.ID, ln.ID, true)
 		if err != nil {
@@ -109,11 +120,10 @@ func (l *LbaasV2) reconcilePools(ctx context.Context, lb *edgecloud.Loadbalancer
 		}
 
 		var desiredMembers []edgecloud.PoolMemberCreateRequest
-
 		for ip := range desired {
 			desiredMembers = append(desiredMembers, edgecloud.PoolMemberCreateRequest{
 				Address:      net.ParseIP(ip),
-				ProtocolPort: ln.ProtocolPort,
+				ProtocolPort: nodePort,
 				SubnetID:     l.opts.SubnetID,
 			})
 		}
@@ -123,7 +133,7 @@ func (l *LbaasV2) reconcilePools(ctx context.Context, lb *edgecloud.Loadbalancer
 			continue
 		}
 
-		klog.V(4).Infof("Pool %s desired members count = %d", pool.ID, len(desiredMembers))
+		klog.V(4).Infof("Pool %s desired members count=%d (port=%d)", pool.ID, len(desiredMembers), nodePort)
 
 		updateReq := &edgecloud.PoolUpdateRequest{
 			ID:                    pool.ID,
@@ -133,7 +143,7 @@ func (l *LbaasV2) reconcilePools(ctx context.Context, lb *edgecloud.Loadbalancer
 			LoadbalancerAlgorithm: pool.LoadbalancerAlgorithm,
 		}
 
-		klog.V(4).Infof("PoolUpdate: %s with %d members", pool.ID, len(updateReq.Members))
+		klog.V(4).Infof("PoolUpdate: %s with %d members (port=%d)", pool.ID, len(updateReq.Members), nodePort)
 
 		_, _, err = l.client.Loadbalancers.PoolUpdate(ctx, pool.ID, updateReq)
 		if err != nil {
@@ -166,17 +176,13 @@ func membersChanged(current []edgecloud.PoolMember, desired []edgecloud.PoolMemb
 		return true
 	}
 
-	curMap := map[string]edgecloud.PoolMember{}
+	curSet := make(map[string]struct{}, len(current))
 	for _, m := range current {
-		curMap[m.Address.String()] = m
+		curSet[poolMemberKey(m)] = struct{}{}
 	}
 
 	for _, d := range desired {
-		cm, ok := curMap[d.Address.String()]
-		if !ok {
-			return true
-		}
-		if cm.ProtocolPort != d.ProtocolPort || cm.SubnetID != d.SubnetID {
+		if _, ok := curSet[poolMemberCreateKey(d)]; !ok {
 			return true
 		}
 	}
@@ -185,13 +191,20 @@ func membersChanged(current []edgecloud.PoolMember, desired []edgecloud.PoolMemb
 }
 
 func popMember(members []edgecloud.PoolMember, addr string, port int) []edgecloud.PoolMember {
-	for i, member := range members {
-		if member.Address.String() == addr && member.ProtocolPort == port {
-			members[i] = members[len(members)-1]
-			members = members[:len(members)-1]
+	j := len(members) - 1
+
+	for i := 0; i <= j; {
+		m := members[i]
+
+		if m.Address.String() == addr && m.ProtocolPort == port {
+			members[i] = members[j]
+			j--
+		} else {
+			i++
 		}
 	}
-	return members
+
+	return members[:j+1]
 }
 
 func (l *LbaasV2) createPool(ctx context.Context, opts *edgecloud.PoolCreateRequest) (*edgecloud.Pool, error) {
