@@ -30,8 +30,6 @@ type SecurityGroupRuleListOpts struct {
 // Creating security group for specific loadbalancer service when it does not exist.
 func (l *LbaasV2) ensureSecurityGroup(ctx context.Context, client *edgecloud.Client, clusterName string, apiService *corev1.Service, nodes []*corev1.Node) error {
 	// find node-security-group for service
-	var err error
-	// get service ports
 	ports := apiService.Spec.Ports
 	if len(ports) == 0 {
 		return fmt.Errorf("no ports provided to edgecenter load balancer")
@@ -67,7 +65,7 @@ func (l *LbaasV2) ensureSecurityGroup(ctx context.Context, client *edgecloud.Cli
 
 		lbSecGroup, _, err := client.SecurityGroups.Create(ctx, createOpts)
 		if err != nil {
-			return fmt.Errorf("failed to create Security Group for loadbalancer service %s/%s: opts: %+v %v",
+			return fmt.Errorf("failed to create Security Group for loadbalancer service %s/%s: opts: %+v %w",
 				apiService.Namespace, apiService.Name, createOpts, err)
 		}
 		lbSecGroupID = lbSecGroup.ID
@@ -93,41 +91,39 @@ func (l *LbaasV2) ensureSecurityGroup(ctx context.Context, client *edgecloud.Cli
 
 		sgRules, err := getSecurityGroupRules(ctx, l.client, sgListOpts)
 		if err != nil {
-			return fmt.Errorf("failed to find security group rules in %s: %v", lbSecGroupID, err)
+			return fmt.Errorf("failed to find security group rules in %s: %w", lbSecGroupID, err)
 		}
 
-		if len(sgRules) != 0 {
-			continue
+		if len(sgRules) == 0 {
+			// The Octavia amphorae and worker nodes are supposed to be in the same subnet. We allow the ingress traffic
+			// from the amphorae to the specific node port on the nodes.
+			cidr := subnet.CIDR
+			rPort := int(port.NodePort)
+
+			description := fmt.Sprintf("Security Group for %s/%s Service LoadBalancer in cluster %s",
+				apiService.Namespace, apiService.Name, clusterName)
+
+			createOpts := &edgecloud.RuleCreateRequest{
+				Direction:       edgecloud.SGRuleDirectionIngress,
+				PortRangeMax:    &rPort,
+				PortRangeMin:    &rPort,
+				Protocol:        toRuleProtocol(port.Protocol),
+				RemoteIPPrefix:  &cidr,
+				SecurityGroupID: &lbSecGroupID,
+				EtherType:       edgecloud.EtherTypeIPv4,
+				Description:     &description,
+			}
+
+			klog.Infof("Create sg rule %s opts %+v", lbSecGroupID, createOpts)
+			_, _, err = client.SecurityGroups.RuleCreate(ctx, lbSecGroupID, createOpts)
+			if err != nil {
+				return fmt.Errorf("failed to create rule for security group %s: %w", lbSecGroupID, err)
+			}
 		}
+	}
 
-		// The Octavia amphorae and worker nodes are supposed to be in the same subnet. We allow the ingress traffic
-		// from the amphorae to the specific node port on the nodes.
-		cidr := subnet.CIDR
-		rPort := int(port.NodePort)
-
-		description := fmt.Sprintf("Security Group for %s/%s Service LoadBalancer in cluster %s", apiService.Namespace, apiService.Name, clusterName)
-
-		createOpts := &edgecloud.RuleCreateRequest{
-			Direction:       edgecloud.SGRuleDirectionIngress,
-			PortRangeMax:    &rPort,
-			PortRangeMin:    &rPort,
-			Protocol:        toRuleProtocol(port.Protocol),
-			RemoteIPPrefix:  &cidr,
-			SecurityGroupID: &lbSecGroupID,
-			EtherType:       edgecloud.EtherTypeIPv4,
-			Description:     &description,
-		}
-
-		klog.Infof("Create sg rule %s opts %+v", lbSecGroupID, createOpts)
-		_, _, err = client.SecurityGroups.RuleCreate(ctx, lbSecGroupID, createOpts)
-		if err != nil {
-			return fmt.Errorf("failed to create rule for security group %s: %v", lbSecGroupID, err)
-		}
-
-		err = applyNodeSecurityGroupIDForLB(ctx, l.client.Instances, nodes, lbSecGroupName)
-		if err != nil {
-			return err
-		}
+	if err := applyNodeSecurityGroupIDForLB(ctx, l.client.Instances, nodes, lbSecGroupName); err != nil {
+		return err
 	}
 
 	return nil
@@ -140,9 +136,11 @@ func (l *LbaasV2) updateSecurityGroup(ctx context.Context, apiService *corev1.Se
 	var err error
 	l.opts.NodeSecurityGroupIDs, err = getNodeSecurityGroupIDForLB(ctx, l.client, nodes)
 	if err != nil {
-		return fmt.Errorf("failed to find node-security-group for loadbalancer service %s/%s: %v", apiService.Namespace, apiService.Name, err)
+		return fmt.Errorf("failed to find node-security-group for loadbalancer service %s/%s: %w",
+			apiService.Namespace, apiService.Name, err)
 	}
-	klog.V(4).Infof("find node-security-group %v for loadbalancer service %s/%s", l.opts.NodeSecurityGroupIDs, apiService.Namespace, apiService.Name)
+	klog.V(4).Infof("find node-security-group %v for loadbalancer service %s/%s",
+		l.opts.NodeSecurityGroupIDs, apiService.Namespace, apiService.Name)
 
 	original := sets.NewString(originalNodeSecurityGroupIDs...)
 	current := sets.NewString(l.opts.NodeSecurityGroupIDs...)
@@ -187,7 +185,7 @@ func (l *LbaasV2) updateSecurityGroup(ctx context.Context, apiService *corev1.Se
 
 			secGroupRules, err := getSecurityGroupRules(ctx, l.client, opts)
 			if err != nil {
-				return fmt.Errorf("error finding rules for remote group id %s in security group id %s: %v", lbSecGroupID, removal, err)
+				return fmt.Errorf("error finding rules for remote group id %s in security group id %s: %w", lbSecGroupID, removal, err)
 			}
 
 			for _, rule := range secGroupRules {
@@ -210,7 +208,8 @@ func (l *LbaasV2) updateSecurityGroup(ctx context.Context, apiService *corev1.Se
 
 			secGroupRules, err := getSecurityGroupRules(ctx, l.client, opts)
 			if err != nil {
-				return fmt.Errorf("error finding rules for remote group id %s in security group id %s: %v", lbSecGroupID, nodeSecurityGroupID, err)
+				return fmt.Errorf("error finding rules for remote group id %s in security group id %s: %w", lbSecGroupID,
+					nodeSecurityGroupID, err)
 			}
 
 			if len(secGroupRules) != 0 {
@@ -221,9 +220,14 @@ func (l *LbaasV2) updateSecurityGroup(ctx context.Context, apiService *corev1.Se
 			// Add the rules in the Node Security Group
 			err = createNodeSecurityGroupRules(ctx, l.client, nodeSecurityGroupID, int(port.NodePort), port.Protocol, lbSecGroupID, apiService)
 			if err != nil {
-				return fmt.Errorf("error occurred creating security group for loadbalancer service %s/%s: %v", apiService.Namespace, apiService.Name, err)
+				return fmt.Errorf("error occurred creating security group for loadbalancer service %s/%s: %w", apiService.Namespace,
+					apiService.Name, err)
 			}
 		}
+	}
+
+	if err := applyNodeSecurityGroupIDForLB(ctx, l.client.Instances, nodes, lbSecGroupName); err != nil {
+		return err
 	}
 
 	return nil
@@ -422,8 +426,6 @@ func createNodeSecurityGroupRules(ctx context.Context, client *edgecloud.Client,
 
 // applyNodeSecurityGroupIDForLB associates the security group with all the ports on the nodes.
 func applyNodeSecurityGroupIDForLB(ctx context.Context, svc edgecloud.InstancesService, nodes []*corev1.Node, securityGroup string) error {
-	opts := &edgecloud.AssignSecurityGroupRequest{Name: securityGroup}
-
 	for _, node := range nodes {
 		nodeName := types.NodeName(node.Name)
 		instance, err := getInstanceByName(ctx, svc, nodeName)
@@ -450,18 +452,34 @@ func applyNodeSecurityGroupIDForLB(ctx context.Context, svc edgecloud.InstancesS
 			return err
 		}
 
+		portsSGNames := make([]edgecloud.PortsSecurityGroupNames, 0, len(interfaces))
 		for _, i := range interfaces {
+			allow := false
 			for _, subnet := range i.NetworkDetails.Subnets {
 				if !strings.HasPrefix(subnet.CIDR, "100.") {
-
-					opts.PortsSecurityGroupNames = []edgecloud.PortsSecurityGroupNames{
-						{
-							SecurityGroupNames: []string{securityGroup},
-							PortID:             i.PortID,
-						},
-					}
+					allow = true
+					break
 				}
 			}
+			if !allow {
+				continue
+			}
+
+			portsSGNames = append(portsSGNames, edgecloud.PortsSecurityGroupNames{
+				SecurityGroupNames: []string{securityGroup},
+				PortID:             i.PortID,
+			})
+		}
+
+		if len(portsSGNames) == 0 {
+			klog.Warningf("no eligible ports found to assign SG %s for instance %s (node=%s)",
+				securityGroup, instance.ID, node.Name)
+			continue
+		}
+
+		opts := &edgecloud.AssignSecurityGroupRequest{
+			Name:                    securityGroup,
+			PortsSecurityGroupNames: portsSGNames,
 		}
 
 		_, err = svc.SecurityGroupAssign(ctx, instance.ID, opts)
@@ -510,7 +528,15 @@ func getNodeSecurityGroupIDForLB(ctx context.Context, client *edgecloud.Client, 
 	secGroupIDs := sets.NewString()
 
 	for _, node := range nodes {
-		list, _, err := client.Instances.SecurityGroupList(ctx, string(node.UID))
+		instanceID := node.Spec.ProviderID
+		if idx := strings.LastIndex(instanceID, "/"); idx >= 0 {
+			instanceID = instanceID[idx+1:]
+		}
+		if instanceID == "" {
+			return nil, fmt.Errorf("empty instanceID for node %s (providerID=%q)", node.Name, node.Spec.ProviderID)
+		}
+
+		list, _, err := client.Instances.SecurityGroupList(ctx, instanceID)
 		if err != nil {
 			return nil, err
 		}
