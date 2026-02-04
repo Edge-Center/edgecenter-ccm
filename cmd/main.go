@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	edgecenterv2 "ec-ccm/internal/edgecenterv2"
+	"ec-ccm/internal/edgecenter"
 	"ec-ccm/internal/util/panicutil"
 	"ec-ccm/internal/version"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -44,7 +44,7 @@ func main() {
 	if err != nil {
 		klog.Fatalf("unable to initialize command options: %v", err)
 	}
-	s.KubeCloudShared.CloudProvider.Name = edgecenterv2.ProviderName
+	s.KubeCloudShared.CloudProvider.Name = edgecenter.ProviderName
 
 	fmt.Printf("Cloud Options %v\n", s)
 
@@ -79,6 +79,8 @@ func main() {
 
 			flag.PrintFlags(cmd.Flags())
 
+			logMetricsEndpointFromFlags(cmd.Flags())
+
 			c, err := s.Config(controllerList, app.ControllersDisabledByDefault.List(), nil, nil, nil)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%v\n", err)
@@ -111,7 +113,7 @@ func main() {
 
 	fs.BoolVar(&versionFlag, "version", false, "Print version and exit")
 
-	edgecenterv2.AddExtraFlags(pflag.CommandLine)
+	edgecenter.AddExtraFlags(pflag.CommandLine)
 
 	pflag.CommandLine.SetNormalizeFunc(flag.WordSepNormalizeFunc)
 
@@ -123,5 +125,25 @@ func main() {
 	if err := command.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func logMetricsEndpointFromFlags(fs *pflag.FlagSet) {
+	get := func(name string) (string, bool) {
+		f := fs.Lookup(name)
+		if f == nil {
+			return "", false
+		}
+		return f.Value.String(), true
+	}
+
+	if mba, ok := get("metrics-bind-address"); ok && mba != "" {
+		klog.Infof("Metrics endpoint (metrics-bind-address): http://%s/metrics", mba)
+	}
+
+	bind, ok1 := get("bind-address")
+	securePort, ok2 := get("secure-port")
+	if ok1 && ok2 && bind != "" && securePort != "" {
+		klog.Infof("Metrics endpoint (secure-port): https://%s:%s/metrics", bind, securePort)
 	}
 }

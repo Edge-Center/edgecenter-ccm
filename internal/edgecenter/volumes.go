@@ -568,9 +568,8 @@ func (ec *Edgecenter) GetLabelsForVolume(ctx context.Context, pv *v1.PersistentV
 
 // recordEdgecenterOperationMetric records edgecenter operation metrics
 func recordEdgecenterOperationMetric(operation string, timeTaken float64, err error) {
+	edgecenterOperationDuration.With(prometheus.Labels{"operation": operation}).Observe(timeTaken)
 	if err != nil {
-		edgecenterAPIRequestErrors.With(prometheus.Labels{"request": operation}).Inc()
-	} else {
-		edgecenterOperationsLatency.With(prometheus.Labels{"request": operation}).Observe(timeTaken)
+		edgecenterOperationErrorsTotal.With(prometheus.Labels{"operation": operation}).Inc()
 	}
 }
