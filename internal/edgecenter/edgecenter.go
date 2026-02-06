@@ -343,18 +343,23 @@ func NewEdgecenterClient(cfg EdgecenterOpts, userAgent string, extraUserAgent ..
 
 	client, err := edgecloud.NewWithRetries(nil, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create edgecenter client")
+		return nil, fmt.Errorf("failed to create edgecenter client: %w", err)
 	}
 
 	klog.V(4).Infof("Using user-agent %s", ua)
 
+	if client.HTTPClient.Transport == nil {
+		client.HTTPClient.Transport = http.DefaultTransport
+	}
+
 	var caPool *x509.CertPool
+
 	if cfg.CAFile != "" {
 		klog.Infof("### with CAFile")
 		// read and parse CA certificate from file
 		caPool, err = certutil.NewPool(cfg.CAFile)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read and parse %s certificate: %s", cfg.CAFile, err)
+			return nil, fmt.Errorf("failed to read and parse %s certificate: %w", cfg.CAFile, err)
 		}
 	} else if cfg.CAFileContents != "" {
 		klog.Infof("### with CAFileContents")
@@ -367,13 +372,20 @@ func NewEdgecenterClient(cfg EdgecenterOpts, userAgent string, extraUserAgent ..
 
 	if caPool != nil {
 		klog.Infof("### with caPool")
-		config := &tls.Config{}
-		config.RootCAs = caPool
-		config.InsecureSkipVerify = cfg.TLSInsecure == "true"
-		client.HTTPClient.Transport = netutil.SetOldTransportDefaults(&http.Transport{TLSClientConfig: config})
+		config := &tls.Config{
+			RootCAs:            caPool,
+			InsecureSkipVerify: cfg.TLSInsecure == "true",
+		}
+		client.HTTPClient.Transport = netutil.SetOldTransportDefaults(
+			&http.Transport{TLSClientConfig: config},
+		)
 	}
 
-	return client, err
+	client.HTTPClient.Transport = &instrumentedRoundTripper{
+		next: client.HTTPClient.Transport,
+	}
+
+	return client, nil
 }
 
 // NewEdgecenter creates a new instance of the edgecenter struct from a config struct
