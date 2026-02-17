@@ -51,6 +51,7 @@ const (
 	ServiceAnnotationLoadBalancerTimeoutMemberData    = "loadbalancer.edgecenter.com/timeout-member-data"              // nolint
 	ServiceAnnotationLoadBalancerTimeoutTCPInspect    = "loadbalancer.edgecenter.com/timeout-tcp-inspect"              // nolint
 	ServiceAnnotationLoadBalancerXForwardedFor        = "loadbalancer.edgecenter.com/x-forwarded-for"                  // nolint
+	ServiceAnnotationLoadBalancerTLSSecretID          = "loadbalancer.edgecenter.com/tls-secret-id"                    // nolint
 
 	// ServiceAnnotationLoadBalancerInternal is the annotation used on the service
 	// to indicate that we want an internal loadbalancer service.

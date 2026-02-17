@@ -64,6 +64,10 @@
 
   Not supported when `lb-provider=ovn` is configured in openstack-cloud-controller-manager.
 
+- `loadbalancer.edgecenter.com/tls-secret-id`
+
+  Secret ID for TLS termination on the load balancer. When set, listeners created during the initial load balancer creation and newly created listeners during subsequent reconciles will use `TERMINATED_HTTPS` with this secret. Existing listeners are not updated if the annotation changes or is removed.
+
 - `loadbalancer.edgecenter.com/lb-method`
 
   Load balancing algorithm to use when distributed to members. [OpenStack Pool Creation | lb_algorithm](https://docs.openstack.org/api-ref/load-balancer/v2/#create-pool)
