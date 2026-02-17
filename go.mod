@@ -1,10 +1,10 @@
 module ec-ccm
 
-go 1.23.3
+go 1.25.7
 
 require (
 	github.com/Edge-Center/edgecentercloud-go v1.2.0
-	github.com/Edge-Center/edgecentercloud-go/v2 v2.2.2
+	github.com/Edge-Center/edgecentercloud-go/v2 v2.4.9
 	github.com/prometheus/client_golang v1.20.5
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/pflag v1.0.6
