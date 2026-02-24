@@ -118,16 +118,9 @@ Although the edgecenter-cloud-controller-manager was initially implemented with 
   This option is currently a workaround for the issue https://github.com/kubernetes/ingress-nginx/issues/3996, should be removed or refactored after the Kubernetes [KEP-1860](https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/1860-kube-proxy-IP-node-binding) is implemented.
 
 * `default-tls-container-ref`
-  Reference to a tls container or secret. This option works with Octavia, when this option is set then the cloud provider will create an Octavia Listener of type TERMINATED_HTTPS for a TLS Terminated loadbalancer.
+  Reference to a tls secret. This option works with Octavia, when this option is set then the cloud provider will create an Octavia Listener of type TERMINATED_HTTPS for a TLS Terminated loadbalancer.
 
-  Accepted format for tls container ref are `https://{keymanager_host}/v1/containers/{uuid}` and `https://{keymanager_host}/v1/secrets/{uuid}`.
-  Check `container-store` parameter if you want to disable validation.
-
-* `container-store`
-  Optional. Used to specify the store of the tls-container-ref, e.g. "barbican" or "external" - other store will cause a warning log.
-  Default value - `barbican` - existence of tls container ref would always be performed.
-
-  If set to `external` format for tls container ref will not be validated.
+  Accepted format for tls container ref is `{secret_uuid}`.
 
 * `max-shared-lb`
   The maximum number of Services that share a load balancer. Default: 2
@@ -137,4 +130,4 @@ Although the edgecenter-cloud-controller-manager was initially implemented with 
   call](https://docs.openstack.org/api-ref/load-balancer/v2/?expanded=create-a-load-balancer-detail#creating-a-fully-populated-load-balancer).
   Setting this option to true will create loadbalancers using serial API calls which first create an unpopulated
   loadbalancer, then populate its listeners, pools and members. This is a compatibility option at the expense of
-  increased load on the OpenStack API. Default: false 
+  increased load on the OpenStack API. Default: false

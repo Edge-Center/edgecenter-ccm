@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -92,18 +91,14 @@ func (l *LbaasV2) ensureLoadBalancerListeners(ctx context.Context, loadbalancer 
 		klog.Warningf("Invalid timeout annotation on service %s/%s: %v", apiService.Namespace, apiService.Name, err)
 	}
 
-	tlsSecretID, err := l.getTLSSecretID(ctx, apiService)
+	secretID, err := l.getSecretID(ctx, apiService)
 	if err != nil {
 		return err
-	}
-	if tlsSecretID != "" && keepClientIP {
-		klog.Warningf("Both TLS secret and x-forwarded-for are set for service %s/%s; "+
-			"TLS termination takes precedence for protocol selection", apiService.Namespace, apiService.Name)
 	}
 
 	for portIndex, port := range ports {
 		var listener *edgecloud.Listener
-		listenerProtocol := resolveListenerProtocol(port.Protocol, keepClientIP, tlsSecretID)
+		listenerProtocol := resolveListenerProtocol(port.Protocol, keepClientIP, secretID)
 		listener = getListenerForPort(oldListeners, listenerProtocol, int(port.Port))
 
 		if listener == nil {
@@ -114,7 +109,7 @@ func (l *LbaasV2) ensureLoadBalancerListeners(ctx context.Context, loadbalancer 
 				ProtocolPort:     int(port.Port),
 				LoadbalancerID:   loadbalancer.ID,
 				InsertXForwarded: keepClientIP,
-				SecretID:         tlsSecretID,
+				SecretID:         secretID,
 			}
 
 			if timeoutOverrides != nil {
@@ -151,6 +146,10 @@ func (l *LbaasV2) ensureLoadBalancerListeners(ctx context.Context, loadbalancer 
 				}
 				if !intPtrEqual(listener.TimeoutMemberConnect, timeoutOverrides.TimeoutMemberConnect) {
 					updateReq.TimeoutMemberConnect = timeoutOverrides.TimeoutMemberConnect
+					needsUpdate = true
+				}
+				if listener.SecretID != secretID {
+					updateReq.SecretID = secretID
 					needsUpdate = true
 				}
 
@@ -269,7 +268,19 @@ func getListenerForPort(existingListeners []edgecloud.Listener, protocol edgeclo
 	return nil
 }
 
-func toListenersProtocol(protocol corev1.Protocol) edgecloud.LoadbalancerListenerProtocol {
+// resolveListenerProtocol determines the appropriate load balancer listener protocol
+func resolveListenerProtocol(
+	protocol corev1.Protocol,
+	keepClientIP bool,
+	secretID string,
+) edgecloud.LoadbalancerListenerProtocol {
+	if secretID != "" {
+		return edgecloud.ListenerProtocolTerminatedHTTPS
+	}
+	if keepClientIP {
+		return edgecloud.ListenerProtocolHTTP
+	}
+
 	switch protocol {
 	case corev1.ProtocolTCP:
 		return edgecloud.ListenerProtocolTCP
@@ -280,39 +291,15 @@ func toListenersProtocol(protocol corev1.Protocol) edgecloud.LoadbalancerListene
 	}
 }
 
-func resolveListenerProtocol(
-	protocol corev1.Protocol,
-	keepClientIP bool,
-	tlsSecretID string,
-) edgecloud.LoadbalancerListenerProtocol {
-	switch {
-	case tlsSecretID != "":
-		return edgecloud.ListenerProtocolTerminatedHTTPS
-	case keepClientIP:
-		return edgecloud.ListenerProtocolHTTP
-	default:
-		return toListenersProtocol(protocol)
-	}
-}
-
 func (l *LbaasV2) createLoadBalancerWithListeners(ctx context.Context, name string, lbClass *LBClass, ports []corev1.ServicePort, apiService *corev1.Service) (*edgecloud.Loadbalancer, error) {
 	keepClientIP, err := getBoolFromServiceAnnotation(apiService, ServiceAnnotationLoadBalancerXForwardedFor, false)
 	if err != nil {
 		return nil, err
 	}
 
-	//meta := map[string]string{InternalClusterNameMeta: l.edgecenter.ClusterID}
-	//if l.edgecenter.NoBillingTag {
-	//	meta[NoBillingMeta] = "true"
-	//}
-
-	tlsSecretID, err := l.getTLSSecretID(ctx, apiService)
+	secretID, err := l.getSecretID(ctx, apiService)
 	if err != nil {
 		return nil, err
-	}
-	if tlsSecretID != "" && keepClientIP {
-		klog.Warningf("Both TLS secret and x-forwarded-for are set for service %s/%s; "+
-			"TLS termination takes precedence for protocol selection", apiService.Namespace, apiService.Name)
 	}
 
 	createOpts := &edgecloud.LoadbalancerCreateRequest{
@@ -345,14 +332,14 @@ func (l *LbaasV2) createLoadBalancerWithListeners(ctx context.Context, name stri
 
 	var listenerOpts []edgecloud.LoadbalancerListenerCreateRequest
 	for portIndex, port := range ports {
-		listenerProtocol := resolveListenerProtocol(port.Protocol, keepClientIP, tlsSecretID)
+		listenerProtocol := resolveListenerProtocol(port.Protocol, keepClientIP, secretID)
 		listenerName := cutString(fmt.Sprintf("%d_%s_listener", portIndex, name))
 		listenerCreateOpt := edgecloud.LoadbalancerListenerCreateRequest{
 			Name:             strings.TrimSuffix(listenerName, "-"),
 			ProtocolPort:     int(port.Port),
 			Protocol:         listenerProtocol,
 			InsertXForwarded: keepClientIP,
-			SecretID:         tlsSecretID,
+			SecretID:         secretID,
 		}
 
 		if timeoutOverrides != nil {
@@ -434,60 +421,4 @@ func (l *LbaasV2) getListenerByID(ctx context.Context, id string) (*edgecloud.Li
 	}
 
 	return listener, nil
-}
-
-// getTLSSecretID gets tech secret ID from client secret ID
-func (l *LbaasV2) getTLSSecretID(ctx context.Context, apiService *corev1.Service) (string, error) {
-	clientSecretID := getStringFromServiceAnnotation(
-		apiService,
-		ServiceAnnotationLoadBalancerTLSSecretID,
-		"",
-	)
-	if clientSecretID == "" {
-		return "", nil
-	}
-	klog.V(4).Infof(
-		"TLS secret ID %s found for service %s/%s",
-		clientSecretID,
-		apiService.Namespace,
-		apiService.Name,
-	)
-
-	techSecretID, err := l.getOrCreateTechSecretByID(ctx, clientSecretID)
-	if err != nil {
-		return "", fmt.Errorf(
-			"failed to get tech secret for service %s/%s: %w",
-			apiService.Namespace,
-			apiService.Name,
-			err,
-		)
-	}
-
-	klog.V(4).Infof("Tech secret ID %s obtained for client secret %s", techSecretID, clientSecretID)
-	return techSecretID, nil
-}
-
-func (l *LbaasV2) getOrCreateTechSecretByID(ctx context.Context, secretID string) (string, error) {
-	type CopySecretSchema struct {
-		SecretId string `json:"secret_id"`
-	}
-	path := fmt.Sprintf(
-		"/internal%s/%d/%d/%s/secrets",
-		edgecloud.MKaaSClustersBasePathV2,
-		l.edgecenter.ProjectID,
-		l.edgecenter.RegionID,
-		l.edgecenter.ClusterID,
-	)
-
-	req, err := l.client.NewRequest(ctx, http.MethodPost, path, &CopySecretSchema{SecretId: secretID})
-	if err != nil {
-		return "", err
-	}
-
-	secretResp := new(CopySecretSchema)
-	if _, err = l.client.Do(ctx, req, secretResp); err != nil {
-		return "", err
-	}
-
-	return secretResp.SecretId, nil
 }
