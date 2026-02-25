@@ -177,7 +177,7 @@ func (l *LbaasV2) ensureLoadBalancerListeners(ctx context.Context, loadbalancer 
 		poolName = strings.TrimSuffix(poolName, "-")
 
 		_, err = l.ensureLoadBalancerPool(ctx, loadbalancer, listener, poolName, port, apiService, persistence,
-			lbMethod, nodes, keepClientIP)
+			lbMethod, nodes, keepClientIP, secretID)
 		if err != nil {
 			return fmt.Errorf("error ensuring pool for listener %s: %w", listener.ID, err)
 		}
