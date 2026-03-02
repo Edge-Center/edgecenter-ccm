@@ -34,23 +34,24 @@ const (
 	defaultLBProtocol = edgecloud.ListenerProtocolTCP
 	maxNameLength     = 63
 
-	ServiceAnnotationLoadBalancerConnLimit            = "loadbalancer.edgecenter.com/connection-limit"                 // nolint
-	ServiceAnnotationLoadBalancerFloatingNetworkID    = "loadbalancer.edgecenter.com/floating-network-id"              // nolint
-	ServiceAnnotationLoadBalancerFloatingSubnet       = "loadbalancer.edgecenter.com/floating-subnet"                  // nolint
-	ServiceAnnotationLoadBalancerFloatingSubnetID     = "loadbalancer.edgecenter.com/floating-subnet-id"               // nolint
-	ServiceAnnotationLoadBalancerInternal             = "service.beta.kubernetes.io/edgecenter-internal-load-balancer" // nolint
-	ServiceAnnotationSaveFloating                     = "loadbalancer.edgecenter.com/save-floating"                    // nolint
-	ServiceAnnotationLoadBalancerClass                = "loadbalancer.edgecenter.com/class"                            // nolint
-	ServiceAnnotationLoadBalancerKeepFloatingIP       = "loadbalancer.edgecenter.com/keep-floatingip"                  // nolint
-	ServiceAnnotationLoadBalancerPortID               = "loadbalancer.edgecenter.com/port-id"                          // nolint
-	ServiceAnnotationLoadBalancerProxyEnabled         = "loadbalancer.edgecenter.com/proxy-protocol"                   // nolint
-	ServiceAnnotationLoadBalancerSubnetID             = "loadbalancer.edgecenter.com/subnet-id"                        // nolint
-	ServiceAnnotationLoadBalancerNetworkID            = "loadbalancer.edgecenter.com/network-id"                       // nolint
-	ServiceAnnotationLoadBalancerTimeoutClientData    = "loadbalancer.edgecenter.com/timeout-client-data"              // nolint
-	ServiceAnnotationLoadBalancerTimeoutMemberConnect = "loadbalancer.edgecenter.com/timeout-member-connect"           // nolint
-	ServiceAnnotationLoadBalancerTimeoutMemberData    = "loadbalancer.edgecenter.com/timeout-member-data"              // nolint
-	ServiceAnnotationLoadBalancerTimeoutTCPInspect    = "loadbalancer.edgecenter.com/timeout-tcp-inspect"              // nolint
-	ServiceAnnotationLoadBalancerXForwardedFor        = "loadbalancer.edgecenter.com/x-forwarded-for"                  // nolint
+	ServiceAnnotationLoadBalancerConnLimit              = "loadbalancer.edgecenter.com/connection-limit"                 // nolint
+	ServiceAnnotationLoadBalancerFloatingNetworkID      = "loadbalancer.edgecenter.com/floating-network-id"              // nolint
+	ServiceAnnotationLoadBalancerFloatingSubnet         = "loadbalancer.edgecenter.com/floating-subnet"                  // nolint
+	ServiceAnnotationLoadBalancerFloatingSubnetID       = "loadbalancer.edgecenter.com/floating-subnet-id"               // nolint
+	ServiceAnnotationLoadBalancerInternal               = "service.beta.kubernetes.io/edgecenter-internal-load-balancer" // nolint
+	ServiceAnnotationSaveFloating                       = "loadbalancer.edgecenter.com/save-floating"                    // nolint
+	ServiceAnnotationLoadBalancerClass                  = "loadbalancer.edgecenter.com/class"                            // nolint
+	ServiceAnnotationLoadBalancerKeepFloatingIP         = "loadbalancer.edgecenter.com/keep-floatingip"                  // nolint
+	ServiceAnnotationLoadBalancerPortID                 = "loadbalancer.edgecenter.com/port-id"                          // nolint
+	ServiceAnnotationLoadBalancerProxyEnabled           = "loadbalancer.edgecenter.com/proxy-protocol"                   // nolint
+	ServiceAnnotationLoadBalancerSubnetID               = "loadbalancer.edgecenter.com/subnet-id"                        // nolint
+	ServiceAnnotationLoadBalancerNetworkID              = "loadbalancer.edgecenter.com/network-id"                       // nolint
+	ServiceAnnotationLoadBalancerTimeoutClientData      = "loadbalancer.edgecenter.com/timeout-client-data"              // nolint
+	ServiceAnnotationLoadBalancerTimeoutMemberConnect   = "loadbalancer.edgecenter.com/timeout-member-connect"           // nolint
+	ServiceAnnotationLoadBalancerTimeoutMemberData      = "loadbalancer.edgecenter.com/timeout-member-data"              // nolint
+	ServiceAnnotationLoadBalancerTimeoutTCPInspect      = "loadbalancer.edgecenter.com/timeout-tcp-inspect"              // nolint
+	ServiceAnnotationLoadBalancerXForwardedFor          = "loadbalancer.edgecenter.com/x-forwarded-for"                  // nolint
+	ServiceAnnotationLoadBalancerDefaultTLSContainerRef = "loadbalancer.edgecenter.com/default-tls-container-ref"        // nolint
 
 	// ServiceAnnotationLoadBalancerInternal is the annotation used on the service
 	// to indicate that we want an internal loadbalancer service.

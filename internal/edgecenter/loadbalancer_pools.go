@@ -18,6 +18,7 @@ func (l *LbaasV2) ensureLoadBalancerPool(ctx context.Context, lb *edgecloud.Load
 	lbMethod edgecloud.LoadbalancerAlgorithm,
 	nodes []*corev1.Node,
 	keepClientIP bool,
+	secretID string,
 ) (*edgecloud.Pool, error) {
 
 	pool, err := getPoolByListenerID(ctx, l.client, lb.ID, listener.ID, true)
@@ -37,7 +38,7 @@ func (l *LbaasV2) ensureLoadBalancerPool(ctx context.Context, lb *edgecloud.Load
 
 	poolProto := edgecloud.LoadbalancerPoolProtocol(listener.Protocol)
 
-	if keepClientIP {
+	if keepClientIP || secretID != "" {
 		poolProto = edgecloud.LoadbalancerPoolProtocol(edgecloud.ListenerProtocolHTTP)
 	}
 

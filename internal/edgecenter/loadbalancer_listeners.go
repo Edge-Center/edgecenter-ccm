@@ -91,20 +91,17 @@ func (l *LbaasV2) ensureLoadBalancerListeners(ctx context.Context, loadbalancer 
 		klog.Warningf("Invalid timeout annotation on service %s/%s: %v", apiService.Namespace, apiService.Name, err)
 	}
 
+	secretID, err := l.getSecretID(ctx, apiService)
+	if err != nil {
+		return err
+	}
+
 	for portIndex, port := range ports {
 		var listener *edgecloud.Listener
-		if keepClientIP {
-			listener = getListenerForPort(oldListeners, edgecloud.ListenerProtocolHTTP, int(port.Port))
-		} else {
-			listener = getListenerForPort(oldListeners, toListenersProtocol(port.Protocol), int(port.Port))
-		}
+		listenerProtocol := resolveListenerProtocol(port.Protocol, keepClientIP, secretID)
+		listener = getListenerForPort(oldListeners, listenerProtocol, int(port.Port))
 
 		if listener == nil {
-			listenerProtocol := toListenersProtocol(port.Protocol)
-			if keepClientIP {
-				listenerProtocol = edgecloud.ListenerProtocolHTTP
-			}
-
 			listenerName := cutString(fmt.Sprintf("%d_%s_listener", portIndex, loadbalancer.Name))
 			listenerCreateOpt := &edgecloud.ListenerCreateRequest{
 				Name:             strings.TrimSuffix(listenerName, "-"),
@@ -112,6 +109,7 @@ func (l *LbaasV2) ensureLoadBalancerListeners(ctx context.Context, loadbalancer 
 				ProtocolPort:     int(port.Port),
 				LoadbalancerID:   loadbalancer.ID,
 				InsertXForwarded: keepClientIP,
+				SecretID:         secretID,
 			}
 
 			if timeoutOverrides != nil {
@@ -150,6 +148,10 @@ func (l *LbaasV2) ensureLoadBalancerListeners(ctx context.Context, loadbalancer 
 					updateReq.TimeoutMemberConnect = timeoutOverrides.TimeoutMemberConnect
 					needsUpdate = true
 				}
+				if listener.SecretID != secretID {
+					updateReq.SecretID = secretID
+					needsUpdate = true
+				}
 
 				if needsUpdate {
 					updateReq.Name = listener.Name
@@ -175,7 +177,7 @@ func (l *LbaasV2) ensureLoadBalancerListeners(ctx context.Context, loadbalancer 
 		poolName = strings.TrimSuffix(poolName, "-")
 
 		_, err = l.ensureLoadBalancerPool(ctx, loadbalancer, listener, poolName, port, apiService, persistence,
-			lbMethod, nodes, keepClientIP)
+			lbMethod, nodes, keepClientIP, secretID)
 		if err != nil {
 			return fmt.Errorf("error ensuring pool for listener %s: %w", listener.ID, err)
 		}
@@ -266,7 +268,19 @@ func getListenerForPort(existingListeners []edgecloud.Listener, protocol edgeclo
 	return nil
 }
 
-func toListenersProtocol(protocol corev1.Protocol) edgecloud.LoadbalancerListenerProtocol {
+// resolveListenerProtocol determines the appropriate load balancer listener protocol
+func resolveListenerProtocol(
+	protocol corev1.Protocol,
+	keepClientIP bool,
+	secretID string,
+) edgecloud.LoadbalancerListenerProtocol {
+	if secretID != "" {
+		return edgecloud.ListenerProtocolTerminatedHTTPS
+	}
+	if keepClientIP {
+		return edgecloud.ListenerProtocolHTTP
+	}
+
 	switch protocol {
 	case corev1.ProtocolTCP:
 		return edgecloud.ListenerProtocolTCP
@@ -283,10 +297,10 @@ func (l *LbaasV2) createLoadBalancerWithListeners(ctx context.Context, name stri
 		return nil, err
 	}
 
-	//meta := map[string]string{InternalClusterNameMeta: l.edgecenter.ClusterID}
-	//if l.edgecenter.NoBillingTag {
-	//	meta[NoBillingMeta] = "true"
-	//}
+	secretID, err := l.getSecretID(ctx, apiService)
+	if err != nil {
+		return nil, err
+	}
 
 	createOpts := &edgecloud.LoadbalancerCreateRequest{
 		Name:   name,
@@ -318,17 +332,14 @@ func (l *LbaasV2) createLoadBalancerWithListeners(ctx context.Context, name stri
 
 	var listenerOpts []edgecloud.LoadbalancerListenerCreateRequest
 	for portIndex, port := range ports {
-		listenerProtocol := toListenersProtocol(port.Protocol)
-		if keepClientIP {
-			listenerProtocol = edgecloud.ListenerProtocolHTTP
-		}
-
+		listenerProtocol := resolveListenerProtocol(port.Protocol, keepClientIP, secretID)
 		listenerName := cutString(fmt.Sprintf("%d_%s_listener", portIndex, name))
 		listenerCreateOpt := edgecloud.LoadbalancerListenerCreateRequest{
 			Name:             strings.TrimSuffix(listenerName, "-"),
 			ProtocolPort:     int(port.Port),
 			Protocol:         listenerProtocol,
 			InsertXForwarded: keepClientIP,
+			SecretID:         secretID,
 		}
 
 		if timeoutOverrides != nil {

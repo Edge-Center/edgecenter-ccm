@@ -136,12 +136,8 @@
 
 - `loadbalancer.edgecenter.com/default-tls-container-ref`
 
-  Reference to a tls container. This option works with Octavia, when this option is set then the cloud provider will create an Octavia Listener of type `TERMINATED_HTTPS` for a TLS Terminated loadbalancer.
-  Format for tls container ref: `https://{keymanager_host}/v1/containers/{uuid}`
-
-  When `container-store` parameter is set to `external` format for `default-tls-container-ref` could be any string.
-
-  Not supported when `lb-provider=ovn` is configured in openstack-cloud-controller-manager.
+  Reference to a tls secret. This option works with Octavia, when this option is set then the cloud provider will create an Octavia Listener of type `TERMINATED_HTTPS` for a TLS Terminated loadbalancer.
+  Format for tls container ref: `{secret_uuid}`
 
 - `loadbalancer.edgecenter.com/load-balancer-id`
 
@@ -268,3 +264,26 @@ spec:
 ```
 
 `loadBalancerSourceRanges` field supports to be updated.
+
+
+# TLS termination with default-tls-container-ref annotation
+All listeners created for the Service that are configured for HTTPS termination will reuse the same TLS secret.
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: test
+  annotations:
+    loadbalancer.edgecenter.com/default-tls-container-ref: "e6b3b9f4-1234-4b7e-9fcd-abcdef012345"
+spec:
+  type: LoadBalancer
+  selector:
+    app: echoserver
+  ports:
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: 80
+```
+In this example, the cloud controller will create an external HTTPS endpoint on port 443, terminate TLS with the certificate stored in secret with UUID e6b3b9f4-1234-4b7e-9fcd-abcdef012345, and send plain HTTP traffic to the pods on port 80.

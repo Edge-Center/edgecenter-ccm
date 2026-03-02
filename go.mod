@@ -1,10 +1,10 @@
 module ec-ccm
 
-go 1.23.3
+go 1.25.7
 
 require (
 	github.com/Edge-Center/edgecentercloud-go v1.2.0
-	github.com/Edge-Center/edgecentercloud-go/v2 v2.2.2
+	github.com/Edge-Center/edgecentercloud-go/v2 v2.4.8-0.20260217080028-c4fd015026c4
 	github.com/prometheus/client_golang v1.20.5
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/pflag v1.0.6
@@ -105,9 +105,9 @@ require (
 	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56 // indirect
 	golang.org/x/net v0.30.0 // indirect
 	golang.org/x/oauth2 v0.23.0 // indirect
-	golang.org/x/sync v0.8.0 // indirect
+	golang.org/x/sync v0.11.0 // indirect
 	golang.org/x/term v0.25.0 // indirect
-	golang.org/x/text v0.19.0 // indirect
+	golang.org/x/text v0.22.0 // indirect
 	golang.org/x/time v0.7.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20240826202546-f6391c0de4c7 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240826202546-f6391c0de4c7 // indirect
