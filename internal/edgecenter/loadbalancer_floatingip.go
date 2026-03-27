@@ -11,12 +11,16 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// EnsureFloatingIP ensures that the load balancer VIP port has the expected floating IP state.
+// It can either delete an existing floating IP mapping or create/assign one to the given port.
 func (l *LbaasV2) EnsureFloatingIP(ctx context.Context, client *edgecloud.Client, needDelete bool, portID string, existingFIP net.IP) (net.IP, error) {
-
 	klog.Info("Ensuring floating IP start")
 
-	// If needed, delete the floating IPs and return.
 	if needDelete {
+		if existingFIP == nil {
+			return nil, nil
+		}
+
 		fips, err := l.getFloatingIPsByAddr(ctx, client, existingFIP.String())
 		if err != nil {
 			return nil, err
@@ -41,57 +45,63 @@ func (l *LbaasV2) EnsureFloatingIP(ctx context.Context, client *edgecloud.Client
 		return nil, fmt.Errorf("more than one floating IPs for port %s found", portID)
 	}
 
-	if existingFIP == nil {
-		createOpts := &edgecloud.FloatingIPCreateRequest{
+	if len(fips) == 1 {
+		klog.Infof("Floating IP already exists for port %s: %s", portID, fips[0].FloatingIPAddress)
+		return net.ParseIP(fips[0].FloatingIPAddress), nil
+	}
+
+	if existingFIP != nil {
+		list, _, err := client.Floatingips.List(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		var fipID string
+		for _, f := range list {
+			if f.FloatingIPAddress == existingFIP.String() {
+				fipID = f.ID
+				break
+			}
+		}
+
+		if fipID == "" {
+			return nil, fmt.Errorf("floating ip %s does not exist", existingFIP.String())
+		}
+
+		assignOpts := &edgecloud.AssignFloatingIPRequest{
 			PortID: portID,
 		}
 
-		klog.Infof("Creating floating with opts %+v", createOpts)
+		klog.Infof("Assigning existing floating IP %s to port %s", existingFIP.String(), portID)
 
-		task, err := edgecloudUtil.ExecuteAndExtractTaskResult(ctx, client.Floatingips.Create, createOpts, client, waitSeconds)
+		fip, _, err := client.Floatingips.Assign(ctx, fipID, assignOpts)
 		if err != nil {
-			return nil, fmt.Errorf("error creating floatingip %+v: %s", createOpts, err.Error())
-		}
-
-		fip, _, err := client.Floatingips.Get(ctx, task.FloatingIPs[0])
-		if err != nil {
-			return nil, fmt.Errorf("cannot get loadbalancer with ID: %s. Error: %w", task.FloatingIPs[0], err)
+			return nil, err
 		}
 
 		return net.ParseIP(fip.FloatingIPAddress), nil
 	}
 
-	list, _, err := client.Floatingips.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var fipID string
-	for _, f := range list {
-		if f.FloatingIPAddress == existingFIP.String() {
-			fipID = f.ID
-			break
-		}
-	}
-
-	if fipID == "" {
-		return nil, fmt.Errorf("floating ip %s does not exist", existingFIP.String())
-	}
-
-	createOpts := &edgecloud.AssignFloatingIPRequest{
+	createOpts := &edgecloud.FloatingIPCreateRequest{
 		PortID: portID,
 	}
 
-	klog.Infof("fip assign fipID %s opts %+v", fipID, createOpts)
+	klog.Infof("Creating floating with opts %+v", createOpts)
 
-	fip, _, err := client.Floatingips.Assign(ctx, fipID, createOpts)
+	task, err := edgecloudUtil.ExecuteAndExtractTaskResult(ctx, client.Floatingips.Create, createOpts, client, waitSeconds)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error creating floatingip %+v: %s", createOpts, err.Error())
+	}
+
+	fip, _, err := client.Floatingips.Get(ctx, task.FloatingIPs[0])
+	if err != nil {
+		return nil, fmt.Errorf("cannot get floating IP with ID: %s. Error: %w", task.FloatingIPs[0], err)
 	}
 
 	return net.ParseIP(fip.FloatingIPAddress), nil
 }
 
+// getFloatingIPsByAddr returns all floating IPs matching the provided address.
 func (l *LbaasV2) getFloatingIPsByAddr(ctx context.Context, client *edgecloud.Client, addr string) ([]edgecloud.FloatingIP, error) {
 	list, _, err := client.Floatingips.List(ctx)
 	if err != nil {
@@ -108,7 +118,8 @@ func (l *LbaasV2) getFloatingIPsByAddr(ctx context.Context, client *edgecloud.Cl
 	return result, nil
 }
 
-// getFloatingNetworkIDForLB returns a floating-network-id for cluster.
+// getFloatingNetworkIDForLB returns an external network ID suitable for floating IP allocation.
+// If multiple external networks exist, the first one is used.
 func getFloatingNetworkIDForLB(ctx context.Context, client *edgecloud.Client) (string, error) {
 	list, _, err := client.Networks.List(ctx, nil)
 	if err != nil {

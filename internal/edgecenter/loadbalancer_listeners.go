@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
-	"time"
 
 	edgecloud "github.com/Edge-Center/edgecentercloud-go/v2"
 	edgecloudUtil "github.com/Edge-Center/edgecentercloud-go/v2/util"
@@ -14,12 +12,75 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// ListenerTimeoutConfig contains optional listener timeout overrides
+// resolved from service annotations.
 type ListenerTimeoutConfig struct {
 	TimeoutClientData    *int
 	TimeoutMemberData    *int
 	TimeoutMemberConnect *int
 }
 
+// ensureLoadBalancerListeners ensures that a listener exists for each Service port.
+// It returns the matched listeners keyed by stable service port key, along with
+// listeners that are no longer needed and can be deleted later.
+func (l *LbaasV2) ensureLoadBalancerListeners(ctx context.Context, loadbalancer *edgecloud.Loadbalancer, ports []corev1.ServicePort, _ *corev1.Service, opts *ServiceOptions) (map[string]*edgecloud.Listener, []edgecloud.Listener, error) {
+	existing, err := getListenersByLoadBalancerID(ctx, l.client, loadbalancer.ID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error getting LB %s listeners: %w", loadbalancer.Name, err)
+	}
+
+	result := make(map[string]*edgecloud.Listener, len(ports))
+	used := make(map[string]struct{}, len(ports))
+
+	for _, port := range ports {
+		key := servicePortKey(port)
+		listenerProtocol := resolveListenerProtocol(port.Protocol, opts.KeepClientIP, opts.SecretID)
+
+		listener := findListenerForServicePort(existing, port, opts)
+		if listener == nil {
+			createReq := buildListenerCreateRequest(loadbalancer.ID, loadbalancer.Name, port, opts)
+
+			klog.V(4).Infof("Creating listener for key=%s port=%d protocol=%s", key, int(port.Port), listenerProtocol)
+			listener, err = l.createListener(ctx, createReq)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to create listener for key=%s: %w", key, err)
+			}
+
+			if _, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, loadbalancer.ID); err != nil {
+				return nil, nil, fmt.Errorf("LB not ACTIVE after listener create for key=%s: %v", key, err)
+			}
+
+			listener, err = l.getListenerByID(ctx, listener.ID)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to reload listener %s: %v", listener.ID, err)
+			}
+		} else {
+			if err := l.updateListenerIfNeeded(ctx, loadbalancer.ID, listener, port, opts); err != nil {
+				return nil, nil, fmt.Errorf("failed updating listener for key=%s: %w", key, err)
+			}
+
+			listener, err = l.getListenerByID(ctx, listener.ID)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to reload listener %s after update: %v", listener.ID, err)
+			}
+		}
+
+		result[key] = listener
+		used[listener.ID] = struct{}{}
+	}
+
+	var obsolete []edgecloud.Listener
+	for _, ln := range existing {
+		if _, ok := used[ln.ID]; !ok {
+			obsolete = append(obsolete, ln)
+		}
+	}
+
+	return result, obsolete, nil
+}
+
+// parseListenerTimeouts parses listener timeout annotations from the Service.
+// Missing annotations are treated as unset values.
 func parseListenerTimeouts(svc *corev1.Service) (*ListenerTimeoutConfig, error) {
 	getTimeout := func(key string) (*int, error) {
 		if val, ok := svc.Annotations[key]; ok {
@@ -52,150 +113,89 @@ func parseListenerTimeouts(svc *corev1.Service) (*ListenerTimeoutConfig, error) 
 	}, nil
 }
 
-func (l *LbaasV2) ensureLoadBalancerListeners(ctx context.Context, loadbalancer *edgecloud.Loadbalancer, ports []corev1.ServicePort, apiService *corev1.Service,
-	nodes []*corev1.Node,
-) error {
-	oldListeners, err := getListenersByLoadBalancerID(ctx, l.client, loadbalancer.ID)
-	if err != nil {
-		return fmt.Errorf("error getting LB %s listeners: %w", loadbalancer.Name, err)
-	}
+// findListenerForServicePort returns an existing listener matching the Service port
+// by resolved protocol and frontend port.
+func findListenerForServicePort(existing []edgecloud.Listener, sp corev1.ServicePort, opts *ServiceOptions) *edgecloud.Listener {
+	wantProtocol := resolveListenerProtocol(sp.Protocol, opts.KeepClientIP, opts.SecretID)
 
-	var persistence *edgecloud.LoadbalancerSessionPersistence
-	affinity := apiService.Spec.SessionAffinity
-	switch affinity {
-	case corev1.ServiceAffinityClientIP:
-		persistence = &edgecloud.LoadbalancerSessionPersistence{Type: edgecloud.SessionPersistenceSourceIP}
-	case corev1.ServiceAffinityNone:
-		persistence = nil
-	default:
-		return fmt.Errorf("unsupported load balancer affinity: %v", affinity)
-	}
-
-	lbMethod := edgecloud.LoadbalancerAlgorithm(l.opts.LBMethod)
-	switch lbMethod {
-	case
-		edgecloud.LoadbalancerAlgorithmRoundRobin,
-		edgecloud.LoadbalancerAlgorithmSourceIP,
-		edgecloud.LoadbalancerAlgorithmLeastConnections:
-	default:
-		lbMethod = edgecloud.LoadbalancerAlgorithmRoundRobin
-	}
-
-	keepClientIP, err := getBoolFromServiceAnnotation(apiService, ServiceAnnotationLoadBalancerXForwardedFor, false)
-	if err != nil {
-		return fmt.Errorf("failed to get X-Forwarded-For annotation: %w", err)
-	}
-
-	timeoutOverrides, err := parseListenerTimeouts(apiService)
-	if err != nil {
-		klog.Warningf("Invalid timeout annotation on service %s/%s: %v", apiService.Namespace, apiService.Name, err)
-	}
-
-	secretID, err := l.getSecretID(ctx, apiService)
-	if err != nil {
-		return err
-	}
-
-	for portIndex, port := range ports {
-		var listener *edgecloud.Listener
-		listenerProtocol := resolveListenerProtocol(port.Protocol, keepClientIP, secretID)
-		listener = getListenerForPort(oldListeners, listenerProtocol, int(port.Port))
-
-		if listener == nil {
-			listenerName := cutString(fmt.Sprintf("%d_%s_listener", portIndex, loadbalancer.Name))
-			listenerCreateOpt := &edgecloud.ListenerCreateRequest{
-				Name:             strings.TrimSuffix(listenerName, "-"),
-				Protocol:         listenerProtocol,
-				ProtocolPort:     int(port.Port),
-				LoadbalancerID:   loadbalancer.ID,
-				InsertXForwarded: keepClientIP,
-				SecretID:         secretID,
-			}
-
-			if timeoutOverrides != nil {
-				listenerCreateOpt.TimeoutClientData = timeoutOverrides.TimeoutClientData
-				listenerCreateOpt.TimeoutMemberData = timeoutOverrides.TimeoutMemberData
-				listenerCreateOpt.TimeoutMemberConnect = timeoutOverrides.TimeoutMemberConnect
-			}
-
-			klog.V(4).Infof("Creating listener for port %d using protocol: %s", int(port.Port), listenerProtocol)
-			listener, err = l.createListener(ctx, listenerCreateOpt)
-			if err != nil {
-				return fmt.Errorf("failed to create listener: %w", err)
-			}
-
-			listener, err = l.getListenerByID(ctx, listener.ID)
-			if err != nil {
-				return fmt.Errorf("failed to reload listener %s: %v", listener.ID, err)
-			}
-
-			klog.V(4).Infof("Listener %s created for loadbalancer %s", listener.ID, loadbalancer.ID)
-
-		} else {
-			if timeoutOverrides != nil {
-				updateReq := &edgecloud.ListenerUpdateRequest{}
-				needsUpdate := false
-
-				if !intPtrEqual(listener.TimeoutClientData, timeoutOverrides.TimeoutClientData) {
-					updateReq.TimeoutClientData = timeoutOverrides.TimeoutClientData
-					needsUpdate = true
-				}
-				if !intPtrEqual(listener.TimeoutMemberData, timeoutOverrides.TimeoutMemberData) {
-					updateReq.TimeoutMemberData = timeoutOverrides.TimeoutMemberData
-					needsUpdate = true
-				}
-				if !intPtrEqual(listener.TimeoutMemberConnect, timeoutOverrides.TimeoutMemberConnect) {
-					updateReq.TimeoutMemberConnect = timeoutOverrides.TimeoutMemberConnect
-					needsUpdate = true
-				}
-				if listener.SecretID != secretID {
-					updateReq.SecretID = secretID
-					needsUpdate = true
-				}
-
-				if needsUpdate {
-					updateReq.Name = listener.Name
-
-					klog.Infof("Updating listener %s timeouts: %+v", listener.ID, updateReq)
-					_, _, err := l.client.Loadbalancers.ListenerUpdate(ctx, listener.ID, updateReq)
-					if err != nil {
-						return fmt.Errorf("failed updating listener %s: %v", listener.ID, err)
-					}
-
-					if _, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, loadbalancer.ID); err != nil {
-						return fmt.Errorf("LB not ACTIVE after listener update: %v", err)
-					}
-				}
-			}
-		}
-
-		// After all ports have been processed, remaining listeners are removed as obsolete.
-		// Pop valid listeners.
-		oldListeners = popListener(oldListeners, listener.ID)
-
-		poolName := cutString(fmt.Sprintf("pool_%d_%s", portIndex, loadbalancer.Name))
-		poolName = strings.TrimSuffix(poolName, "-")
-
-		_, err = l.ensureLoadBalancerPool(ctx, loadbalancer, listener, poolName, port, apiService, persistence,
-			lbMethod, nodes, keepClientIP, secretID)
-		if err != nil {
-			return fmt.Errorf("error ensuring pool for listener %s: %w", listener.ID, err)
+	for i := range existing {
+		ln := &existing[i]
+		if ln.Protocol == wantProtocol && ln.ProtocolPort == int(sp.Port) {
+			return ln
 		}
 	}
 
-	// All remaining listeners are obsolete, delete
-	for _, listener := range oldListeners {
-		klog.V(4).Infof("Deleting obsolete listener %s:", listener.ID)
-		err = l.ensureListenerDeleted(ctx, loadbalancer, &listener)
-		if err != nil {
-			return fmt.Errorf("failed to delete obsolete listener %s: %w", listener.ID, err)
-		}
-	}
 	return nil
 }
 
+// buildListenerCreateRequest builds a listener create request for the given Service port.
+func buildListenerCreateRequest(lbID string, lbName string, sp corev1.ServicePort, opts *ServiceOptions) *edgecloud.ListenerCreateRequest {
+	req := &edgecloud.ListenerCreateRequest{
+		Name:             buildListenerName(lbName, sp),
+		Protocol:         resolveListenerProtocol(sp.Protocol, opts.KeepClientIP, opts.SecretID),
+		ProtocolPort:     int(sp.Port),
+		LoadbalancerID:   lbID,
+		InsertXForwarded: opts.KeepClientIP,
+		SecretID:         opts.SecretID,
+	}
+
+	if opts.Timeouts != nil {
+		req.TimeoutClientData = opts.Timeouts.TimeoutClientData
+		req.TimeoutMemberData = opts.Timeouts.TimeoutMemberData
+		req.TimeoutMemberConnect = opts.Timeouts.TimeoutMemberConnect
+	}
+
+	return req
+}
+
+// updateListenerIfNeeded updates mutable listener settings when the actual listener
+// does not match the desired configuration derived from the Service.
+func (l *LbaasV2) updateListenerIfNeeded(ctx context.Context, loadbalancerID string, listener *edgecloud.Listener, sp corev1.ServicePort, opts *ServiceOptions) error {
+	updateReq := &edgecloud.ListenerUpdateRequest{}
+	needsUpdate := false
+
+	if opts.Timeouts != nil {
+		if !intPtrEqual(listener.TimeoutClientData, opts.Timeouts.TimeoutClientData) {
+			updateReq.TimeoutClientData = opts.Timeouts.TimeoutClientData
+			needsUpdate = true
+		}
+		if !intPtrEqual(listener.TimeoutMemberData, opts.Timeouts.TimeoutMemberData) {
+			updateReq.TimeoutMemberData = opts.Timeouts.TimeoutMemberData
+			needsUpdate = true
+		}
+		if !intPtrEqual(listener.TimeoutMemberConnect, opts.Timeouts.TimeoutMemberConnect) {
+			updateReq.TimeoutMemberConnect = opts.Timeouts.TimeoutMemberConnect
+			needsUpdate = true
+		}
+	}
+
+	if listener.SecretID != opts.SecretID {
+		updateReq.SecretID = opts.SecretID
+		needsUpdate = true
+	}
+
+	if !needsUpdate {
+		return nil
+	}
+
+	updateReq.Name = listener.Name
+
+	klog.Infof("Updating listener %s: %+v", listener.ID, updateReq)
+	_, _, err := l.client.Loadbalancers.ListenerUpdate(ctx, listener.ID, updateReq)
+	if err != nil {
+		return fmt.Errorf("failed updating listener %s: %v", listener.ID, err)
+	}
+
+	if _, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, loadbalancerID); err != nil {
+		return fmt.Errorf("LB not ACTIVE after listener update: %v", err)
+	}
+
+	return nil
+}
+
+// ensureListenerDeleted deletes the listener and its bound pool, if present.
+// This is used during cleanup when a listener is no longer part of the desired Service state.
 func (l *LbaasV2) ensureListenerDeleted(ctx context.Context, loadbalancer *edgecloud.Loadbalancer, listener *edgecloud.Listener) error {
-	// get pool for listener
 	pool, err := getPoolByListenerID(ctx, l.client, loadbalancer.ID, listener.ID, false)
 	if err != nil {
 		if !errors.Is(err, ErrNotFound) {
@@ -207,7 +207,6 @@ func (l *LbaasV2) ensureListenerDeleted(ctx context.Context, loadbalancer *edgec
 	if pool != nil {
 		klog.V(4).Infof("Deleting obsolete pool %s for listener %s", pool.ID, listener.ID)
 
-		// delete pool
 		err = l.deletePool(ctx, pool.ID)
 		if err != nil {
 			return fmt.Errorf("error deleting obsolete pool %s for listener %s: %v", pool.ID, listener.ID, err)
@@ -219,7 +218,6 @@ func (l *LbaasV2) ensureListenerDeleted(ctx context.Context, loadbalancer *edgec
 		}
 	}
 
-	// delete listener
 	err = l.deleteListener(ctx, listener.ID)
 	if err != nil {
 		return fmt.Errorf("error deleteting obsolete listener: %v", err)
@@ -231,10 +229,41 @@ func (l *LbaasV2) ensureListenerDeleted(ctx context.Context, loadbalancer *edgec
 	}
 
 	klog.V(2).Infof("Deleted obsolete listener: %s", listener.ID)
+	return nil
+}
+
+// deleteObsoleteListenersAndPools deletes resources that were not matched to current Service ports.
+// Pools are removed before listeners to preserve dependency order.
+func deleteObsoleteListenersAndPools(ctx context.Context, l *LbaasV2, loadbalancer *edgecloud.Loadbalancer, obsoleteListeners []edgecloud.Listener, obsoletePools []edgecloud.Pool) error {
+	for _, pool := range obsoletePools {
+		klog.V(4).Infof("Deleting obsolete pool %s", pool.ID)
+		if err := l.deletePool(ctx, pool.ID); err != nil {
+			return fmt.Errorf("failed to delete obsolete pool %s: %w", pool.ID, err)
+		}
+		if _, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, loadbalancer.ID); err != nil {
+			return fmt.Errorf("LB not ACTIVE after obsolete pool delete: %v", err)
+		}
+	}
+
+	for _, listener := range obsoleteListeners {
+		klog.V(4).Infof("Deleting obsolete listener %s", listener.ID)
+		if err := l.deleteListener(ctx, listener.ID); err != nil {
+			return fmt.Errorf("failed to delete obsolete listener %s: %w", listener.ID, err)
+		}
+		if _, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, loadbalancer.ID); err != nil {
+			return fmt.Errorf("LB not ACTIVE after obsolete listener delete: %v", err)
+		}
+	}
 
 	return nil
 }
 
+// deleteObsoleteListenersAndPools is a method wrapper around the package-level cleanup helper.
+func (l *LbaasV2) deleteObsoleteListenersAndPools(ctx context.Context, loadbalancer *edgecloud.Loadbalancer, obsoleteListeners []edgecloud.Listener, obsoletePools []edgecloud.Pool) error {
+	return deleteObsoleteListenersAndPools(ctx, l, loadbalancer, obsoleteListeners, obsoletePools)
+}
+
+// popListener removes the listener with the given ID from the slice in-place.
 func popListener(existingListeners []edgecloud.Listener, id string) []edgecloud.Listener {
 	for i, existingListener := range existingListeners {
 		if existingListener.ID == id {
@@ -247,33 +276,19 @@ func popListener(existingListeners []edgecloud.Listener, id string) []edgecloud.
 	return existingListeners
 }
 
+// getListenersByLoadBalancerID lists all listeners attached to the given load balancer.
 func getListenersByLoadBalancerID(ctx context.Context, client *edgecloud.Client, loadbalancerID string) ([]edgecloud.Listener, error) {
 	opts := &edgecloud.ListenerListOptions{LoadbalancerID: loadbalancerID}
-
 	list, _, err := client.Loadbalancers.ListenerList(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
-
 	return list, nil
 }
 
-// get listener for a port or nil if it does not exist
-func getListenerForPort(existingListeners []edgecloud.Listener, protocol edgecloud.LoadbalancerListenerProtocol, port int) *edgecloud.Listener {
-	for _, l := range existingListeners {
-		if l.Protocol == protocol && l.ProtocolPort == port {
-			return &l
-		}
-	}
-	return nil
-}
-
-// resolveListenerProtocol determines the appropriate load balancer listener protocol
-func resolveListenerProtocol(
-	protocol corev1.Protocol,
-	keepClientIP bool,
-	secretID string,
-) edgecloud.LoadbalancerListenerProtocol {
+// resolveListenerProtocol determines the listener protocol to use for the Service port.
+// TLS termination takes precedence over HTTP X-Forwarded-For mode, and both override raw transport protocol mapping.
+func resolveListenerProtocol(protocol corev1.Protocol, keepClientIP bool, secretID string) edgecloud.LoadbalancerListenerProtocol {
 	if secretID != "" {
 		return edgecloud.ListenerProtocolTerminatedHTTPS
 	}
@@ -291,84 +306,7 @@ func resolveListenerProtocol(
 	}
 }
 
-func (l *LbaasV2) createLoadBalancerWithListeners(ctx context.Context, name string, lbClass *LBClass, ports []corev1.ServicePort, apiService *corev1.Service) (*edgecloud.Loadbalancer, error) {
-	keepClientIP, err := getBoolFromServiceAnnotation(apiService, ServiceAnnotationLoadBalancerXForwardedFor, false)
-	if err != nil {
-		return nil, err
-	}
-
-	secretID, err := l.getSecretID(ctx, apiService)
-	if err != nil {
-		return nil, err
-	}
-
-	createOpts := &edgecloud.LoadbalancerCreateRequest{
-		Name:   name,
-		Flavor: lbFlavor,
-		//Metadata: meta,
-		//Tags:     []string{l.edgecenter.ClusterID, k8sIngressTag},
-	}
-
-	if lbClass != nil {
-		if lbClass.NetworkID != "" {
-			createOpts.VipNetworkID = lbClass.NetworkID
-		}
-		if lbClass.SubnetID != "" {
-			createOpts.VipSubnetID = lbClass.SubnetID
-		}
-	} else {
-		if l.opts.NetworkID != "" {
-			createOpts.VipNetworkID = l.opts.NetworkID
-		}
-		if l.opts.SubnetID != "" {
-			createOpts.VipSubnetID = l.opts.SubnetID
-		}
-	}
-
-	timeoutOverrides, err := parseListenerTimeouts(apiService)
-	if err != nil {
-		klog.Warningf("Invalid timeout annotation on service %s/%s: %v", apiService.Namespace, apiService.Name, err)
-	}
-
-	var listenerOpts []edgecloud.LoadbalancerListenerCreateRequest
-	for portIndex, port := range ports {
-		listenerProtocol := resolveListenerProtocol(port.Protocol, keepClientIP, secretID)
-		listenerName := cutString(fmt.Sprintf("%d_%s_listener", portIndex, name))
-		listenerCreateOpt := edgecloud.LoadbalancerListenerCreateRequest{
-			Name:             strings.TrimSuffix(listenerName, "-"),
-			ProtocolPort:     int(port.Port),
-			Protocol:         listenerProtocol,
-			InsertXForwarded: keepClientIP,
-			SecretID:         secretID,
-		}
-
-		if timeoutOverrides != nil {
-			listenerCreateOpt.TimeoutClientData = timeoutOverrides.TimeoutClientData
-			listenerCreateOpt.TimeoutMemberData = timeoutOverrides.TimeoutMemberData
-			listenerCreateOpt.TimeoutMemberConnect = timeoutOverrides.TimeoutMemberConnect
-		}
-
-		listenerOpts = append(listenerOpts, listenerCreateOpt)
-	}
-
-	createOpts.Listeners = listenerOpts
-
-	klog.Infof("Creating load balancer %s with create request %+v", name, createOpts)
-
-	task, err := edgecloudUtil.ExecuteAndExtractTaskResult(ctx, l.client.Loadbalancers.Create, createOpts, l.client, 5*time.Minute)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create loadbalancer: %w", err)
-	}
-
-	lbID := task.Loadbalancers[0]
-	lb, _, err := l.client.Loadbalancers.Get(ctx, lbID)
-	if err != nil {
-		return nil, fmt.Errorf("cannot get loadbalancer with ID: %s. Error: %w", lbID, err)
-	}
-
-	return lb, nil
-}
-
+// createListener creates a new listener and returns its fully loaded representation.
 func (l *LbaasV2) createListener(ctx context.Context, opts *edgecloud.ListenerCreateRequest) (*edgecloud.Listener, error) {
 	task, err := edgecloudUtil.ExecuteAndExtractTaskResult(ctx, l.client.Loadbalancers.ListenerCreate, opts, l.client, waitSeconds)
 	if err != nil {
@@ -383,6 +321,7 @@ func (l *LbaasV2) createListener(ctx context.Context, opts *edgecloud.ListenerCr
 	return lbl, nil
 }
 
+// deleteListener deletes the listener and verifies that it no longer exists.
 func (l *LbaasV2) deleteListener(ctx context.Context, listenerID string) error {
 	task, err := edgecloudUtil.ExecuteAndExtractTaskResult(
 		ctx,
@@ -413,12 +352,11 @@ func (l *LbaasV2) deleteListener(ctx context.Context, listenerID string) error {
 	return fmt.Errorf("deleteListener: listener %q still exists after deletion attempt", remainingListenerID)
 }
 
+// getListenerByID returns the current listener representation by its ID.
 func (l *LbaasV2) getListenerByID(ctx context.Context, id string) (*edgecloud.Listener, error) {
 	listener, _, err := l.client.Loadbalancers.ListenerGet(ctx, id)
-
 	if err != nil {
 		return nil, err
 	}
-
 	return listener, nil
 }
