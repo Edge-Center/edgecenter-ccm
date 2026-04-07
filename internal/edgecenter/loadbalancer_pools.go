@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
 	"time"
 
 	edgecloud "github.com/Edge-Center/edgecentercloud-go/v2"
@@ -353,59 +352,25 @@ func nodeAddressForLB(node *corev1.Node) (string, error) {
 	return "", ErrNoAddressFound
 }
 
-func isLoadBalancerImmutableError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	msg := err.Error()
-	return strings.Contains(msg, "immutable state") ||
-		strings.Contains(msg, "is not allowed to process")
-}
-
+// updatePoolMembersWithRetry updates the pool members and retries when the LB backend
+// temporarily rejects the operation because the load balancer is in an immutable state.
 func (l *LbaasV2) updatePoolMembersWithRetry(ctx context.Context, lbID string, poolID string, updateReq *edgecloud.PoolUpdateRequest) error {
-	backoff := wait.Backoff{
-		Duration: 2 * time.Second,
-		Factor:   1.5,
-		Steps:    6,
-	}
-
-	var lastErr error
-
-	err := wait.ExponentialBackoffWithContext(ctx, backoff, func(ctx context.Context) (bool, error) {
-		if _, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, lbID); err != nil {
-			lastErr = fmt.Errorf("LB not ACTIVE before PoolUpdate: %w", err)
-			return false, nil
-		}
-
+	return l.runLBOperationWithRetry(ctx, lbID, "PoolUpdate", poolID, func(ctx context.Context) error {
 		_, _, err := l.client.Loadbalancers.PoolUpdate(ctx, poolID, updateReq)
-		if err != nil {
-			if isLoadBalancerImmutableError(err) {
-				lastErr = err
-				klog.Warningf("PoolUpdate for pool %s hit immutable LB state, retrying", poolID)
-				return false, nil
-			}
-			return false, err
-		}
-
-		if _, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, lbID); err != nil {
-			lastErr = fmt.Errorf("LB not ACTIVE after PoolUpdate: %w", err)
-			return false, nil
-		}
-
-		return true, nil
-	})
-
-	if err != nil {
-		if lastErr != nil {
-			return lastErr
-		}
 		return err
-	}
-
-	return nil
+	})
 }
 
+// deletePoolWithRetry deletes the specified pool and retries on transient immutable-state
+// errors returned by the load balancer API.
+func (l *LbaasV2) deletePoolWithRetry(ctx context.Context, lbID string, poolID string) error {
+	return l.runLBOperationWithRetry(ctx, lbID, "PoolDelete", poolID, func(ctx context.Context) error {
+		return l.deletePool(ctx, poolID)
+	})
+}
+
+// waitPoolMembersApplied waits until the pool state returned by the API reflects the
+// desired member set after a successful pool update operation.
 func (l *LbaasV2) waitPoolMembersApplied(ctx context.Context, lbID string, poolID string, desired []edgecloud.PoolMemberCreateRequest) (*edgecloud.Pool, error) {
 	backoff := wait.Backoff{
 		Duration: 2 * time.Second,
