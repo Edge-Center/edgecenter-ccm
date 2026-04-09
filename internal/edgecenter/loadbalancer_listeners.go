@@ -207,25 +207,15 @@ func (l *LbaasV2) ensureListenerDeleted(ctx context.Context, loadbalancer *edgec
 	if pool != nil {
 		klog.V(4).Infof("Deleting obsolete pool %s for listener %s", pool.ID, listener.ID)
 
-		err = l.deletePool(ctx, pool.ID)
+		err = l.deletePoolWithRetry(ctx, loadbalancer.ID, pool.ID)
 		if err != nil {
 			return fmt.Errorf("error deleting obsolete pool %s for listener %s: %v", pool.ID, listener.ID, err)
 		}
-
-		provisioningStatus, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, loadbalancer.ID)
-		if err != nil {
-			return fmt.Errorf("timeout when waiting for loadbalancer to be ACTIVE after deleting pool, current provisioning status %s", provisioningStatus)
-		}
 	}
 
-	err = l.deleteListener(ctx, listener.ID)
+	err = l.deleteListenerWithRetry(ctx, loadbalancer.ID, listener.ID)
 	if err != nil {
-		return fmt.Errorf("error deleteting obsolete listener: %v", err)
-	}
-
-	provisioningStatus, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, loadbalancer.ID)
-	if err != nil {
-		return fmt.Errorf("timeout when waiting for loadbalancer to be ACTIVE after deleting listener, current provisioning status %s", provisioningStatus)
+		return fmt.Errorf("error deleting obsolete listener %s: %v", listener.ID, err)
 	}
 
 	klog.V(2).Infof("Deleted obsolete listener: %s", listener.ID)
@@ -237,21 +227,15 @@ func (l *LbaasV2) ensureListenerDeleted(ctx context.Context, loadbalancer *edgec
 func deleteObsoleteListenersAndPools(ctx context.Context, l *LbaasV2, loadbalancer *edgecloud.Loadbalancer, obsoleteListeners []edgecloud.Listener, obsoletePools []edgecloud.Pool) error {
 	for _, pool := range obsoletePools {
 		klog.V(4).Infof("Deleting obsolete pool %s", pool.ID)
-		if err := l.deletePool(ctx, pool.ID); err != nil {
+		if err := l.deletePoolWithRetry(ctx, loadbalancer.ID, pool.ID); err != nil {
 			return fmt.Errorf("failed to delete obsolete pool %s: %w", pool.ID, err)
-		}
-		if _, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, loadbalancer.ID); err != nil {
-			return fmt.Errorf("LB not ACTIVE after obsolete pool delete: %v", err)
 		}
 	}
 
 	for _, listener := range obsoleteListeners {
 		klog.V(4).Infof("Deleting obsolete listener %s", listener.ID)
-		if err := l.deleteListener(ctx, listener.ID); err != nil {
+		if err := l.deleteListenerWithRetry(ctx, loadbalancer.ID, listener.ID); err != nil {
 			return fmt.Errorf("failed to delete obsolete listener %s: %w", listener.ID, err)
-		}
-		if _, err := waitLoadbalancerActiveProvisioningStatus(ctx, l.client, loadbalancer.ID); err != nil {
-			return fmt.Errorf("LB not ACTIVE after obsolete listener delete: %v", err)
 		}
 	}
 
@@ -359,4 +343,12 @@ func (l *LbaasV2) getListenerByID(ctx context.Context, id string) (*edgecloud.Li
 		return nil, err
 	}
 	return listener, nil
+}
+
+// deleteListenerWithRetry deletes the specified listener and retries when the load balancer
+// API temporarily rejects the operation because the LB is in an immutable state.
+func (l *LbaasV2) deleteListenerWithRetry(ctx context.Context, lbID, listenerID string) error {
+	return l.runLBOperationWithRetry(ctx, lbID, "ListenerDelete", listenerID, func(ctx context.Context) error {
+		return l.deleteListener(ctx, listenerID)
+	})
 }
