@@ -35,14 +35,7 @@ The following annotations can be used to customize LoadBalancer behavior.
 | `loadbalancer.edgecenter.com/timeout-client-data` | Listener client timeout | ✅ | ✅ | Updated in-place |
 | `loadbalancer.edgecenter.com/timeout-member-data` | Listener backend timeout | ✅ | ✅ | Updated in-place |
 | `loadbalancer.edgecenter.com/timeout-member-connect` | Listener connect timeout | ✅ | ✅ | Updated in-place |
-| `loadbalancer.edgecenter.com/proxy-protocol` | Enable PROXY protocol | ⚠️ | ❌ | Parsed but not applied |
-| `loadbalancer.edgecenter.com/connection-limit` | Connection limit | ⚠️ | ❌ | Not implemented |
-| `loadbalancer.edgecenter.com/timeout-tcp-inspect` | TCP inspect timeout | ⚠️ | ❌ | Not implemented |
 | `loadbalancer.edgecenter.com/save-floating` | Preserve floating IP on delete | N/A | N/A | Used only during deletion |
-| `loadbalancer.edgecenter.com/floating-subnet` | Floating subnet name | ⚠️ | ❌ | Not used |
-| `loadbalancer.edgecenter.com/floating-subnet-id` | Floating subnet ID | ⚠️ | ❌ | Not used |
-| `loadbalancer.edgecenter.com/keep-floatingip` | Keep floating IP | ⚠️ | ❌ | Not used |
-| `loadbalancer.edgecenter.com/port-id` | Existing port ID | ⚠️ | ❌ | Not used |
 
 ---
 
