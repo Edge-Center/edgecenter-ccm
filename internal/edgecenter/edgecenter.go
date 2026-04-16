@@ -169,8 +169,26 @@ type Edgecenter struct {
 	localInstanceID string
 }
 
+// Instances returns an implementation of Instances for Edgecenter.
+func (ec *Edgecenter) Instances() (cloudprovider.Instances, bool) {
+	klog.V(4).Info("edgecenter.Instances() called")
+
+	return &Instances{
+		client:         ec.client,
+		opts:           ec.metadataOpts,
+		networkingOpts: ec.networkingOpts,
+	}, true
+}
+
+// InstancesV2 returns an implementation of InstancesV2 for Edgecenter.
 func (ec *Edgecenter) InstancesV2() (cloudprovider.InstancesV2, bool) {
-	return nil, false
+	klog.V(4).Info("edgecenter.InstancesV2() called")
+
+	return &Instances{
+		client:         ec.client,
+		opts:           ec.metadataOpts,
+		networkingOpts: ec.networkingOpts,
+	}, true
 }
 
 // EdgecenterOpts is used to talk to Edgecenter service

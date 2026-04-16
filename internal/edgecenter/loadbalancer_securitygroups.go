@@ -8,7 +8,6 @@ import (
 
 	edgecloud "github.com/Edge-Center/edgecentercloud-go/v2"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 )
@@ -115,7 +114,7 @@ func (l *LbaasV2) ensureSecurityGroup(ctx context.Context, client *edgecloud.Cli
 		}
 	}
 
-	if err := applyNodeSecurityGroupIDForLB(ctx, l.client.Instances, nodes, lbSecGroupName); err != nil {
+	if err := applyNodeSecurityGroupIDForLB(ctx, l.client, nodes, lbSecGroupName); err != nil {
 		return err
 	}
 
@@ -125,7 +124,7 @@ func (l *LbaasV2) ensureSecurityGroup(ctx context.Context, client *edgecloud.Cli
 // updateSecurityGroup updates node security group rules after node set changes.
 // It removes stale ingress rules and creates missing ones for current node security groups.
 func (l *LbaasV2) updateSecurityGroup(ctx context.Context, apiService *corev1.Service, nodes []*corev1.Node, opts *ServiceOptions) error {
-	currentNodeSecurityGroupIDs, err := getNodeSecurityGroupIDForLB(ctx, l.client, nodes)
+	currentNodeSecurityGroupIDs, err := getNodeSecurityGroupID(ctx, l.client, nodes)
 	if err != nil {
 		return fmt.Errorf("failed to find node-security-group for loadbalancer service %s/%s: %w",
 			apiService.Namespace, apiService.Name, err)
@@ -214,7 +213,7 @@ func (l *LbaasV2) updateSecurityGroup(ctx context.Context, apiService *corev1.Se
 		}
 	}
 
-	if err := applyNodeSecurityGroupIDForLB(ctx, l.client.Instances, nodes, lbSecGroupName); err != nil {
+	if err := applyNodeSecurityGroupIDForLB(ctx, l.client, nodes, lbSecGroupName); err != nil {
 		return err
 	}
 
@@ -390,16 +389,16 @@ func createNodeSecurityGroupRules(ctx context.Context, client *edgecloud.Client,
 }
 
 // applyNodeSecurityGroupIDForLB associates the LB security group with eligible node ports.
-func applyNodeSecurityGroupIDForLB(ctx context.Context, svc edgecloud.InstancesService, nodes []*corev1.Node, securityGroup string) error {
+// It resolves the backing cloud instance primarily via node.spec.providerID and falls back
+// to node name lookup only when providerID is not yet initialized.
+func applyNodeSecurityGroupIDForLB(ctx context.Context, client *edgecloud.Client, nodes []*corev1.Node, securityGroup string) error {
 	for _, node := range nodes {
-		nodeName := types.NodeName(node.Name)
-		instance, err := getInstanceByName(ctx, svc, nodeName)
+		instance, err := getInstanceByNode(ctx, client, node)
 		if err != nil {
 			return err
 		}
 
 		sgExists := false
-
 		for _, isg := range instance.SecurityGroups {
 			if isg.Name == securityGroup {
 				sgExists = true
@@ -411,15 +410,15 @@ func applyNodeSecurityGroupIDForLB(ctx context.Context, svc edgecloud.InstancesS
 			continue
 		}
 
-		interfaces, _, err := svc.InterfaceList(ctx, instance.ID)
+		interfaces, _, err := client.Instances.InterfaceList(ctx, instance.ID)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to list interfaces for instance %s: %w", instance.ID, err)
 		}
 
 		portsSGNames := make([]edgecloud.PortsSecurityGroupNames, 0, len(interfaces))
-		for _, i := range interfaces {
+		for _, iface := range interfaces {
 			allow := false
-			for _, subnet := range i.NetworkDetails.Subnets {
+			for _, subnet := range iface.NetworkDetails.Subnets {
 				if !strings.HasPrefix(subnet.CIDR, "100.") {
 					allow = true
 					break
@@ -431,7 +430,7 @@ func applyNodeSecurityGroupIDForLB(ctx context.Context, svc edgecloud.InstancesS
 
 			portsSGNames = append(portsSGNames, edgecloud.PortsSecurityGroupNames{
 				SecurityGroupNames: []string{securityGroup},
-				PortID:             i.PortID,
+				PortID:             iface.PortID,
 			})
 		}
 
@@ -446,7 +445,7 @@ func applyNodeSecurityGroupIDForLB(ctx context.Context, svc edgecloud.InstancesS
 			PortsSecurityGroupNames: portsSGNames,
 		}
 
-		_, err = svc.SecurityGroupAssign(ctx, instance.ID, opts)
+		_, err = client.Instances.SecurityGroupAssign(ctx, instance.ID, opts)
 		if err != nil {
 			return fmt.Errorf("failed to assign security group %s to instance %s: %w", securityGroup, instance.ID, err)
 		}
@@ -487,12 +486,12 @@ func disassociateSecurityGroupForLB(ctx context.Context, svc edgecloud.Instances
 	return nil
 }
 
-// getNodeSecurityGroupIDForLB returns the set of security group IDs attached to the given nodes.
-func getNodeSecurityGroupIDForLB(ctx context.Context, client *edgecloud.Client, nodes []*corev1.Node) ([]string, error) {
+// getNodeSecurityGroupID returns the set of security group IDs attached to the given nodes.
+func getNodeSecurityGroupID(ctx context.Context, client *edgecloud.Client, nodes []*corev1.Node) ([]string, error) {
 	secGroupIDs := sets.NewString()
 
 	for _, node := range nodes {
-		instanceID, err := getNodeInstanceIDForLB(ctx, client, node)
+		instanceID, err := getNodeInstanceID(ctx, client, node)
 		if err != nil {
 			return nil, err
 		}
@@ -535,22 +534,19 @@ func toRuleProtocol(protocol corev1.Protocol) edgecloud.SecurityGroupRuleProtoco
 	return tp
 }
 
-func getNodeInstanceIDForLB(ctx context.Context, client *edgecloud.Client, node *corev1.Node) (string, error) {
-	if node.Spec.ProviderID != "" {
-		instanceID := node.Spec.ProviderID
-		if idx := strings.LastIndex(instanceID, "/"); idx >= 0 {
-			instanceID = instanceID[idx+1:]
-		}
-		if instanceID != "" {
-			return instanceID, nil
-		}
-	}
-
-	instance, err := getInstanceByName(ctx, client.Instances, types.NodeName(node.Name))
+// getInstanceByNode resolves the backing Edgecenter instance for the given Kubernetes node.
+// It primarily uses node.spec.providerID and falls back to lookup by node name when providerID
+// is not yet initialized.
+func getInstanceByNode(ctx context.Context, client *edgecloud.Client, node *corev1.Node) (*edgecloud.Instance, error) {
+	instanceID, err := getNodeInstanceID(ctx, client, node)
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve instanceID for node %s: providerID=%q, name lookup failed: %w",
-			node.Name, node.Spec.ProviderID, err)
+		return nil, err
 	}
 
-	return instance.ID, nil
+	instance, _, err := client.Instances.Get(ctx, instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get instance %s for node %s: %w", instanceID, node.Name, err)
+	}
+
+	return instance, nil
 }

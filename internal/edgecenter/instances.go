@@ -25,7 +25,7 @@ import (
 
 	edgecloud "github.com/Edge-Center/edgecentercloud-go/v2"
 	edgecloudUtil "github.com/Edge-Center/edgecentercloud-go/v2/util"
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/klog/v2"
@@ -44,17 +44,6 @@ const (
 	instanceShutoff = "SHUTOFF"
 )
 
-// Instances returns an implementation of Instances for Edgecenter.
-func (ec *Edgecenter) Instances() (cloudprovider.Instances, bool) {
-	klog.V(4).Info("edgecenter.Instances() called")
-
-	return &Instances{
-		client:         ec.client,
-		opts:           ec.metadataOpts,
-		networkingOpts: ec.networkingOpts,
-	}, true
-}
-
 // CurrentNodeName implements Instances.CurrentNodeName
 // Note this is *not* necessarily the same as hostname.
 func (i *Instances) CurrentNodeName(_ context.Context, _ string) (types.NodeName, error) {
@@ -71,7 +60,7 @@ func (i *Instances) AddSSHKeyToAllInstances(_ context.Context, _ string, _ []byt
 }
 
 // NodeAddresses implements Instances.NodeAddresses
-func (i *Instances) NodeAddresses(ctx context.Context, name types.NodeName) ([]v1.NodeAddress, error) {
+func (i *Instances) NodeAddresses(ctx context.Context, name types.NodeName) ([]corev1.NodeAddress, error) {
 	klog.V(4).Infof("NodeAddresses(%v) called", name)
 
 	addrs, err := getAddressesByName(ctx, i.client.Instances, name, i.networkingOpts)
@@ -86,20 +75,20 @@ func (i *Instances) NodeAddresses(ctx context.Context, name types.NodeName) ([]v
 // NodeAddressesByProviderID returns the node addresses of an instances with the specified unique providerID
 // This method will not be called from the node that is requesting this ID. i.e. metadata service
 // and other local methods cannot be used here
-func (i *Instances) NodeAddressesByProviderID(ctx context.Context, providerID string) ([]v1.NodeAddress, error) {
+func (i *Instances) NodeAddressesByProviderID(ctx context.Context, providerID string) ([]corev1.NodeAddress, error) {
 	instanceID, err := instanceIDFromProviderID(providerID)
 	if err != nil {
-		return []v1.NodeAddress{}, err
+		return []corev1.NodeAddress{}, err
 	}
 
 	instance, _, err := i.client.Instances.Get(ctx, instanceID)
 	if err != nil {
-		return []v1.NodeAddress{}, err
+		return []corev1.NodeAddress{}, err
 	}
 
 	addresses, err := nodeAddresses(instance, i.networkingOpts)
 	if err != nil {
-		return []v1.NodeAddress{}, err
+		return []corev1.NodeAddress{}, err
 	}
 
 	return addresses, nil
@@ -156,9 +145,8 @@ func (i *Instances) InstanceID(ctx context.Context, name types.NodeName) (string
 		}
 		return "", err
 	}
-	// In the future it is possible to also return an endpoint as:
-	// <endpoint>/<instanceid>
-	return "/" + instance.ID, nil
+
+	return buildProviderID(instance.ID), nil
 }
 
 // InstanceTypeByProviderID returns the cloudprovider instance type of the node with the specified unique providerID
@@ -217,4 +205,114 @@ func instanceIDFromProviderID(providerID string) (instanceID string, err error) 
 		return "", fmt.Errorf("ProviderID \"%s\" didn't match expected format \"edgecenter:///InstanceID\"", providerID)
 	}
 	return matches[1], nil
+}
+
+// instanceByNode resolves the backing cloud instance for the given Kubernetes node.
+// It prefers node.spec.providerID and falls back to lookup by node name.
+func (i *Instances) instanceByNode(ctx context.Context, node *corev1.Node) (*edgecloud.Instance, error) {
+	if node == nil {
+		return nil, fmt.Errorf("node is nil")
+	}
+
+	if node.Spec.ProviderID != "" {
+		instanceID, err := instanceIDFromProviderID(node.Spec.ProviderID)
+		if err != nil {
+			return nil, err
+		}
+
+		instance, _, err := i.client.Instances.Get(ctx, instanceID)
+		if err != nil {
+			return nil, err
+		}
+
+		return instance, nil
+	}
+
+	instance, err := getInstanceByName(ctx, i.client.Instances, types.NodeName(node.Name))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, cloudprovider.InstanceNotFound
+		}
+		return nil, err
+	}
+
+	return instance, nil
+}
+
+// InstanceExists returns true if the instance backing the provided node still exists.
+func (i *Instances) InstanceExists(ctx context.Context, node *corev1.Node) (bool, error) {
+	instance, err := i.instanceByNode(ctx, node)
+	if err != nil {
+		if errors.Is(err, cloudprovider.InstanceNotFound) || errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	return instance != nil, nil
+}
+
+// InstanceShutdown returns true if the instance backing the provided node is shut off.
+func (i *Instances) InstanceShutdown(ctx context.Context, node *corev1.Node) (bool, error) {
+	instance, err := i.instanceByNode(ctx, node)
+	if err != nil {
+		return false, err
+	}
+
+	return instance.Status == instanceShutoff, nil
+}
+
+// InstanceMetadata returns cloud metadata for the provided node.
+// ProviderID is used by cloud-node-controller to initialize node.spec.providerID.
+func (i *Instances) InstanceMetadata(ctx context.Context, node *corev1.Node) (*cloudprovider.InstanceMetadata, error) {
+	instance, err := i.instanceByNode(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+
+	addresses, err := nodeAddresses(instance, i.networkingOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	instanceType, err := srvInstanceType(instance)
+	if err != nil {
+		return nil, err
+	}
+
+	return &cloudprovider.InstanceMetadata{
+		ProviderID:    buildProviderID(instance.ID),
+		InstanceType:  instanceType,
+		NodeAddresses: addresses,
+	}, nil
+}
+
+// buildProviderID builds providerID in format:
+//
+//	edgecenter:///<instance-id>
+func buildProviderID(instanceID string) string {
+	return ProviderName + ":///" + instanceID
+}
+
+// getNodeInstanceID returns instance ID for the given node.
+// It first tries to get instance ID from node.spec.providerID.
+// If providerID is empty or invalid, it falls back to instance lookup by node name.
+func getNodeInstanceID(ctx context.Context, client *edgecloud.Client, node *corev1.Node) (string, error) {
+	if node.Spec.ProviderID != "" {
+		instanceID := node.Spec.ProviderID
+		if idx := strings.LastIndex(instanceID, "/"); idx >= 0 {
+			instanceID = instanceID[idx+1:]
+		}
+		if instanceID != "" {
+			return instanceID, nil
+		}
+	}
+
+	instance, err := getInstanceByName(ctx, client.Instances, types.NodeName(node.Name))
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve instanceID for node %s: providerID=%q, name lookup failed: %w",
+			node.Name, node.Spec.ProviderID, err)
+	}
+
+	return instance.ID, nil
 }
