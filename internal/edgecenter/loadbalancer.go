@@ -18,7 +18,7 @@ import (
 	v1service "ec-ccm/internal/api/v1/service"
 )
 
-var lbFlavor = "lb2-1-2"
+const defaultLBFlavor = "lb2-1-2"
 
 // LbaasV2 implements Kubernetes LoadBalancer operations using Edgecenter LBaaS v2.
 type LbaasV2 struct {
@@ -29,6 +29,7 @@ type LbaasV2 struct {
 // These options are derived from service annotations, cloud config and service spec,
 // and are then reused across LB creation/update phases.
 type ServiceOptions struct {
+	FlavorID             string
 	NetworkID            string
 	SubnetID             string
 	FloatingNetworkID    string
@@ -189,6 +190,7 @@ func (l *LbaasV2) EnsureLoadBalancer(ctx context.Context, clusterName string, ap
 // into a single normalized structure used by the rest of the reconciliation flow.
 func (l *LbaasV2) resolveServiceOptions(ctx context.Context, svc *corev1.Service, nodes []*corev1.Node) (*ServiceOptions, error) {
 	opts := &ServiceOptions{
+		FlavorID:             getStringFromServiceAnnotation(svc, ServiceAnnotationLoadBalancerFlavorID, defaultLBFlavor),
 		NetworkID:            getStringFromServiceAnnotation(svc, ServiceAnnotationLoadBalancerNetworkID, l.opts.NetworkID),
 		SubnetID:             getStringFromServiceAnnotation(svc, ServiceAnnotationLoadBalancerSubnetID, l.opts.SubnetID),
 		FloatingNetworkID:    getStringFromServiceAnnotation(svc, ServiceAnnotationLoadBalancerFloatingNetworkID, l.opts.FloatingNetworkID),
@@ -333,7 +335,7 @@ func (l *LbaasV2) resolveServiceOptions(ctx context.Context, svc *corev1.Service
 func (l *LbaasV2) createLoadBalancer(ctx context.Context, name string, opts *ServiceOptions) (*edgecloud.Loadbalancer, error) {
 	createOpts := &edgecloud.LoadbalancerCreateRequest{
 		Name:   name,
-		Flavor: lbFlavor,
+		Flavor: opts.FlavorID,
 	}
 
 	if opts.NetworkID != "" {

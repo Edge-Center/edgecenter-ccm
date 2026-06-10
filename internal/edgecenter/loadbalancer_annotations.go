@@ -53,6 +53,7 @@ const (
 	ServiceAnnotationLoadBalancerTimeoutTCPInspect      = "loadbalancer.edgecenter.com/timeout-tcp-inspect"              // nolint
 	ServiceAnnotationLoadBalancerXForwardedFor          = "loadbalancer.edgecenter.com/x-forwarded-for"                  // nolint
 	ServiceAnnotationLoadBalancerDefaultTLSContainerRef = "loadbalancer.edgecenter.com/default-tls-container-ref"        // nolint
+	ServiceAnnotationLoadBalancerFlavorID               = "loadbalancer.edgecenter.com/flavor-id"                        // nolint
 
 	// k8sIngressTag is a legacy/internal tag value used for Kubernetes ingress-related resources.
 	k8sIngressTag = "k8s_ingress"
