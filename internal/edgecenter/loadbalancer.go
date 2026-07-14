@@ -18,7 +18,7 @@ import (
 	v1service "ec-ccm/internal/api/v1/service"
 )
 
-const defaultLBFlavor = "lb2-1-2"
+const defaultLBFlavor = "lb1-1-2"
 
 // LbaasV2 implements Kubernetes LoadBalancer operations using Edgecenter LBaaS v2.
 type LbaasV2 struct {
