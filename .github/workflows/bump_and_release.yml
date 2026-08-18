@@ -1,4 +1,4 @@
-name: Bump and Release CSI Driver
+name: Bump and Release CCM
 
 on:
   workflow_dispatch:
@@ -104,6 +104,15 @@ jobs:
           image_name=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           echo "image_name=$image_name" >> $GITHUB_OUTPUT
 
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.vars.outputs.image_name }}
+          tags: |
+            type=raw,value=${{ needs.bump-version.outputs.new_tag }}
+            type=raw,value=latest
+
       - name: Build and push Docker image
         id: build-and-push
         uses: docker/build-push-action@v5.0.0
@@ -111,9 +120,7 @@ jobs:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
           platforms: linux/amd64,linux/arm64
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.vars.outputs.image_name }}:${{ needs.bump-version.outputs.new_tag }}
-            ${{ env.REGISTRY }}/${{ steps.vars.outputs.image_name }}:latest
+          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -123,6 +130,53 @@ jobs:
           TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
         run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+
+  update-helm-chart:
+    name: Update Helm chart
+    runs-on: ubuntu-latest
+    needs:
+      - bump-version
+      - build
+
+    steps:
+      - name: Checkout Helm charts repository
+        uses: actions/checkout@v4
+        with:
+          repository: Edge-Center/ec-helm-charts.github.io
+          ref: main
+          path: ec-helm-charts
+          token: ${{ secrets.EC_HELM_CHARTS_TOKEN }}
+
+      - name: Update ec-ccm version
+        working-directory: ec-helm-charts
+        env:
+          NEW_TAG: ${{ needs.bump-version.outputs.new_tag }}
+        run: |
+          chart_version="${NEW_TAG#v}"
+
+          sed -i -E "s/^version: .*/version: ${chart_version}/" charts/ec-ccm/Chart.yaml
+          sed -i -E "s/^appVersion: .*/appVersion: \"${NEW_TAG}\"/" charts/ec-ccm/Chart.yaml
+          sed -i -E '/^image:/,/^[^ ]/ s/^  tag: .*/  tag: "'"${NEW_TAG}"'"/' charts/ec-ccm/values.yaml
+
+          grep -Fx "version: ${chart_version}" charts/ec-ccm/Chart.yaml
+          grep -Fx "appVersion: \"${NEW_TAG}\"" charts/ec-ccm/Chart.yaml
+          grep -A2 '^image:' charts/ec-ccm/values.yaml | grep -Fx '  tag: "'"${NEW_TAG}"'"'
+
+      - name: Commit and push Helm chart update
+        working-directory: ec-helm-charts
+        env:
+          NEW_TAG: ${{ needs.bump-version.outputs.new_tag }}
+        run: |
+          if git diff --quiet; then
+            echo "Helm chart already uses ${NEW_TAG}"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add charts/ec-ccm/Chart.yaml charts/ec-ccm/values.yaml
+          git commit -m "chore(ec-ccm): bump to ${NEW_TAG}"
+          git push origin HEAD:main
 
   trivy:
     name: Trivy Scan
