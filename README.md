@@ -15,9 +15,10 @@ Currently `edgecenter-cloud-controller-manager` implements:
 
 ## Compatibility with Kubernetes
 
-| Kubernetes Version | Edgecenter Cloud Controller Manager Version |
-|--------------------|---------------------------------------------|
-| v1.31              | v1.0.0                                      |
+| Kubernetes Version | Edgecenter Cloud Controller Manager Version | Validation |
+|--------------------|---------------------------------------------|------------|
+| v1.31              | v1.0.0                                      | Upstream compatibility entry |
+| v1.36              | Next release                                | Tested with Kubernetes v1.36.5 |
 
 ## LoadBalancer Service Annotations
 
@@ -25,6 +26,8 @@ The following annotations can be used to customize LoadBalancer behavior.
 
 | Annotation | Description | Create | Update | Notes |
 |------------|------------|--------|--------|------|
+| `loadbalancer.edgecenter.com/region-id` | Edgecenter region for this Service | ✅ | ❌ | Set with `ip-address`; delete and recreate the Service to change it |
+| `loadbalancer.edgecenter.com/ip-address` | Existing public IPv4 address | ✅ | ❌ | Uses a reserved fixed IP port or an existing floating IP |
 | `loadbalancer.edgecenter.com/class` | Logical LB class (predefined network/subnet/floating config) | ✅ | ⚠️ Partial | Changes may not fully apply to existing LB |
 | `loadbalancer.edgecenter.com/network-id` | Network ID for LB VIP | ✅ | ❌ | Used only during LB creation |
 | `loadbalancer.edgecenter.com/subnet-id` | Subnet ID for LB VIP and pool members | ✅ | ⚠️ Partial | Does not move existing VIP |

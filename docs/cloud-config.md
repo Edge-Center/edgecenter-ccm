@@ -105,6 +105,20 @@ Although the edgecenter-cloud-controller-manager was initially implemented with 
     * subnet-id. The same with `subnet-id` option above.
     * member-subnet-id. The same with `member-subnet-id` option above.
 
+* `LoadBalancerRegion "RegionID"`
+
+  This section defines network settings for Services that select another Edgecenter region with the `region-id` annotation.
+
+  Set `network-id`, `subnet-id`, and `floating-network-id` when these IDs differ by region. The controller uses the global `LoadBalancer` values for fields that this section omits.
+
+  ```ini
+  [LoadBalancerRegion "20"]
+  network-id="network-id-for-region-20"
+  subnet-id="subnet-id-for-region-20"
+  floating-network-id="floating-network-id-for-region-20"
+  node-selector="topology.kubernetes.io/region=moscow"
+  ```
+
 * `enable-ingress-hostname`
 
   Used with proxy protocol (set by annotation `loadbalancer.edgecenter.com/proxy-protocol: "true"`) by adding a dns suffix (nip.io) to the load balancer IP address. Default false.

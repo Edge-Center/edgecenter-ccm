@@ -6,6 +6,35 @@
 
   The public network id which will allocate public IP for loadbalancer. This annotation works when the value of `service.beta.kubernetes.io/edgecenter-internal-load-balancer` is false.
 
+- `loadbalancer.edgecenter.com/region-id`
+
+  The Edgecenter region ID for this Service. Set this annotation with `loadbalancer.edgecenter.com/ip-address` to select a regional static IP.
+
+- `loadbalancer.edgecenter.com/ip-address`
+
+  An existing public IPv4 address in the selected region. The controller uses a matching reserved fixed IP port. It also accepts an existing floating IP.
+
+  The controller keeps this address after you delete the Service.
+
+  Set both regional annotations on each Service. Create one `LoadBalancer` Service for each regional address. Do not change either annotation after you create a Service. Delete the Service before you change its region or address.
+
+  ```yaml
+  apiVersion: v1
+  kind: Service
+  metadata:
+    name: nginx-region-20
+    annotations:
+      loadbalancer.edgecenter.com/region-id: "20"
+      loadbalancer.edgecenter.com/ip-address: "203.0.113.20"
+  spec:
+    type: LoadBalancer
+    selector:
+      app: nginx
+    ports:
+      - port: 80
+        targetPort: 8080
+  ```
+
 - `loadbalancer.edgecenter.com/floating-subnet`
 
   A public network can have several subnets. This annotation is the name of subnet belonging to the floating network. This annotation is optional.
