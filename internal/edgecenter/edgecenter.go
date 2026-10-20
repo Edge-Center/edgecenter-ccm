@@ -27,6 +27,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -104,22 +105,23 @@ type LoadBalancer struct {
 
 // LoadBalancerOpts have the options to talk to Neutron LBaaSV2 or Octavia
 type LoadBalancerOpts struct {
-	LBVersion            string              `gcfg:"lb-version"`          // overrides autodetection. Only support v2.
-	UseOctavia           bool                `gcfg:"use-octavia"`         // uses Octavia V2 service catalog endpoint
-	SubnetID             string              `gcfg:"subnet-id"`           // overrides autodetection.
-	NetworkID            string              `gcfg:"network-id"`          // If specified, will create virtual ip from a subnet in network which has available IP addresses
-	FloatingNetworkID    string              `gcfg:"floating-network-id"` // If specified, will create floating ip for loadbalancer, or do not create floating ip.
-	FloatingSubnetID     string              `gcfg:"floating-subnet-id"`  // If specified, will create floating ip for loadbalancer in this particular floating pool subnetwork.
-	LBClasses            map[string]*LBClass // Predefined named Floating networks and subnets
-	LBMethod             string              `gcfg:"lb-method"` // default to ROUND_ROBIN.
-	LBProvider           string              `gcfg:"lb-provider"`
-	CreateMonitor        bool                `gcfg:"create-monitor"`
-	MonitorDelay         MyDuration          `gcfg:"monitor-delay"`
-	MonitorTimeout       MyDuration          `gcfg:"monitor-timeout"`
-	MonitorMaxRetries    uint                `gcfg:"monitor-max-retries"`
-	ManageSecurityGroups bool                `gcfg:"manage-security-groups"`
-	NodeSecurityGroupIDs []string            // Do not specify, get instance_types automatically when enable manage-security-groups. TODO(FengyunPan): move instance_types into cache
-	InternalLB           bool                `gcfg:"internal-lb"` // default false
+	LBVersion            string               `gcfg:"lb-version"`          // overrides autodetection. Only support v2.
+	UseOctavia           bool                 `gcfg:"use-octavia"`         // uses Octavia V2 service catalog endpoint
+	SubnetID             string               `gcfg:"subnet-id"`           // overrides autodetection.
+	NetworkID            string               `gcfg:"network-id"`          // If specified, will create virtual ip from a subnet in network which has available IP addresses
+	FloatingNetworkID    string               `gcfg:"floating-network-id"` // If specified, will create floating ip for loadbalancer, or do not create floating ip.
+	FloatingSubnetID     string               `gcfg:"floating-subnet-id"`  // If specified, will create floating ip for loadbalancer in this particular floating pool subnetwork.
+	LBClasses            map[string]*LBClass  // Predefined named Floating networks and subnets
+	LBRegions            map[string]*LBRegion // Regional network settings keyed by Edgecenter region ID
+	LBMethod             string               `gcfg:"lb-method"` // default to ROUND_ROBIN.
+	LBProvider           string               `gcfg:"lb-provider"`
+	CreateMonitor        bool                 `gcfg:"create-monitor"`
+	MonitorDelay         MyDuration           `gcfg:"monitor-delay"`
+	MonitorTimeout       MyDuration           `gcfg:"monitor-timeout"`
+	MonitorMaxRetries    uint                 `gcfg:"monitor-max-retries"`
+	ManageSecurityGroups bool                 `gcfg:"manage-security-groups"`
+	NodeSecurityGroupIDs []string             // Do not specify, get instance_types automatically when enable manage-security-groups. TODO(FengyunPan): move instance_types into cache
+	InternalLB           bool                 `gcfg:"internal-lb"` // default false
 }
 
 // LBClass defines the corresponding floating network, floating subnet or internal subnet ID
@@ -210,13 +212,14 @@ type EdgecenterOpts struct {
 
 // Config is used to read and store information from the cloud configuration file
 type Config struct {
-	LoadBalancer      LoadBalancerOpts
-	LoadBalancerClass map[string]*LBClass
-	BlockStorage      BlockStorageOpts
-	Route             RouterOpts
-	Metadata          MetadataOpts
-	Networking        NetworkingOpts
-	Edgecenter        EdgecenterOpts
+	LoadBalancer       LoadBalancerOpts
+	LoadBalancerClass  map[string]*LBClass
+	LoadBalancerRegion map[string]*LBRegion
+	BlockStorage       BlockStorageOpts
+	Route              RouterOpts
+	Metadata           MetadataOpts
+	Networking         NetworkingOpts
+	Edgecenter         EdgecenterOpts
 }
 
 func LogCfg(cfg Config) {
@@ -235,7 +238,7 @@ func init() {
 			klog.Infof("Error reading config: %v", err)
 		}
 
-		klog.Infof("Config after read %v", cfg)
+		LogCfg(cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -261,8 +264,6 @@ func ReadConfig(config io.Reader) (Config, error) {
 		return Config{}, err
 	}
 
-	klog.Infof("CONFIG %v", cfg.Edgecenter)
-
 	klog.V(5).Infof("Config, loaded from the config file:")
 	LogCfg(cfg)
 
@@ -278,6 +279,13 @@ func ReadConfig(config io.Reader) (Config, error) {
 	// ini file doesn't support maps, so we are reusing top level subsections
 	// and copy the resulting map to corresponding loadbalancer section
 	cfg.LoadBalancer.LBClasses = cfg.LoadBalancerClass
+	for regionID := range cfg.LoadBalancerRegion {
+		id, err := strconv.Atoi(regionID)
+		if err != nil || id <= 0 {
+			return Config{}, fmt.Errorf("LoadBalancerRegion section name %q must be a positive Edgecenter region ID", regionID)
+		}
+	}
+	cfg.LoadBalancer.LBRegions = cfg.LoadBalancerRegion
 
 	return cfg, err
 }
@@ -563,7 +571,7 @@ func (ec *Edgecenter) LoadBalancer() (cloudprovider.LoadBalancer, bool) {
 	klog.V(1).Info("Claiming to support LoadBalancer")
 
 	return &LbaasV2{
-		LoadBalancer{
+		LoadBalancer: LoadBalancer{
 			client:     ec.client,
 			opts:       ec.lbOpts,
 			edgecenter: ec.cfg.Edgecenter,

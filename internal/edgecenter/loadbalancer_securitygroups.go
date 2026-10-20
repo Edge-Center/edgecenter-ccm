@@ -69,9 +69,13 @@ func (l *LbaasV2) ensureSecurityGroup(ctx context.Context, client *edgecloud.Cli
 	}
 
 	for _, port := range ports {
-		subnet, _, err := client.Subnetworks.Get(ctx, opts.SubnetID)
+		subnetID := opts.SecurityGroupSubnetID
+		if subnetID == "" {
+			subnetID = opts.SubnetID
+		}
+		subnet, _, err := client.Subnetworks.Get(ctx, subnetID)
 		if err != nil {
-			return fmt.Errorf("failed to find subnet %s from edgecenter API: %w", opts.SubnetID, err)
+			return fmt.Errorf("failed to find subnet %s from edgecenter API: %w", subnetID, err)
 		}
 
 		sgListOpts := SecurityGroupRuleListOpts{

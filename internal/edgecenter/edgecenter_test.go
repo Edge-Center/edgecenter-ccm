@@ -348,7 +348,11 @@ func TestCheckEdgecenterOpts(t *testing.T) {
 			continue
 		}
 
-		if err != nil || testCase.expectedError != nil || !errors.Is(err, testCase.expectedError) {
+		if testCase.expectedError == nil && err != nil {
+			t.Errorf("%s failed: expected no error, got %q", testCase.name, err)
+			continue
+		}
+		if testCase.expectedError != nil && (err == nil || err.Error() != testCase.expectedError.Error()) {
 			t.Errorf("%s failed: expected err=%q, got %q",
 				testCase.name, testCase.expectedError, err)
 		}

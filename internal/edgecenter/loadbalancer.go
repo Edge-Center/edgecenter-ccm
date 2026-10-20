@@ -11,6 +11,7 @@ import (
 	edgecloud "github.com/Edge-Center/edgecentercloud-go/v2"
 	edgecloudUtil "github.com/Edge-Center/edgecentercloud-go/v2/util"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/klog/v2"
@@ -23,34 +24,59 @@ const defaultLBFlavor = "lb1-1-2"
 // LbaasV2 implements Kubernetes LoadBalancer operations using Edgecenter LBaaS v2.
 type LbaasV2 struct {
 	LoadBalancer
+	nodeSelector labels.Selector
 }
 
 // ServiceOptions contains resolved load balancer settings for a particular Service.
 // These options are derived from service annotations, cloud config and service spec,
 // and are then reused across LB creation/update phases.
 type ServiceOptions struct {
-	FlavorID             string
-	NetworkID            string
-	SubnetID             string
-	FloatingNetworkID    string
-	Internal             bool
-	KeepClientIP         bool
-	UseProxyProtocol     bool
-	SecretID             string
-	Timeouts             *ListenerTimeoutConfig
-	LBMethod             edgecloud.LoadbalancerAlgorithm
-	SessionPersistence   *edgecloud.LoadbalancerSessionPersistence
-	CreateMonitor        bool
-	ManageSecurityGroups bool
-	LBClass              *LBClass
-	NodeSecurityGroupIDs []string
+	FlavorID              string
+	NetworkID             string
+	SubnetID              string
+	FloatingNetworkID     string
+	VIPPortID             string
+	SecurityGroupSubnetID string
+	Internal              bool
+	KeepClientIP          bool
+	UseProxyProtocol      bool
+	SecretID              string
+	Timeouts              *ListenerTimeoutConfig
+	LBMethod              edgecloud.LoadbalancerAlgorithm
+	SessionPersistence    *edgecloud.LoadbalancerSessionPersistence
+	CreateMonitor         bool
+	ManageSecurityGroups  bool
+	LBClass               *LBClass
+	NodeSecurityGroupIDs  []string
 }
 
 // EnsureLoadBalancer creates or updates the load balancer for the Service.
 // The flow is split into phases: LB -> listeners -> pools -> pool members -> obsolete cleanup.
 func (l *LbaasV2) EnsureLoadBalancer(ctx context.Context, clusterName string, apiService *corev1.Service, nodes []*corev1.Node) (*corev1.LoadBalancerStatus, error) {
+	regionalLB, err := l.forService(apiService)
+	if err != nil {
+		return nil, err
+	}
+	nodes, err = regionalLB.selectServiceNodes(nodes)
+	if err != nil {
+		return nil, err
+	}
+	return regionalLB.ensureLoadBalancer(ctx, clusterName, apiService, nodes)
+}
+
+func (l *LbaasV2) ensureLoadBalancer(ctx context.Context, clusterName string, apiService *corev1.Service, nodes []*corev1.Node) (*corev1.LoadBalancerStatus, error) {
 	serviceName := fmt.Sprintf("%s/%s", apiService.Namespace, apiService.Name)
 	klog.V(2).Infof("[LB] === START EnsureLoadBalancer for %s ===", serviceName)
+	_, requestedIP, err := resolveServiceRegionAndIPAddress(apiService, l.edgecenter.RegionID)
+	if err != nil {
+		return nil, err
+	}
+	if requestedIP != nil && len(apiService.Status.LoadBalancer.Ingress) > 0 {
+		currentIP := net.ParseIP(apiService.Status.LoadBalancer.Ingress[0].IP)
+		if currentIP != nil && !currentIP.Equal(requestedIP) {
+			return nil, fmt.Errorf("static IP cannot change on an existing Service; delete and recreate the Service")
+		}
+	}
 
 	if len(nodes) == 0 {
 		err := fmt.Errorf("there are no available nodes for LoadBalancer service %s", serviceName)
@@ -71,6 +97,9 @@ func (l *LbaasV2) EnsureLoadBalancer(ctx context.Context, clusterName string, ap
 		logLBPhaseFailed(serviceName, "resolveServiceOptions", err)
 		return nil, err
 	}
+	if requestedIP != nil && opts.Internal {
+		return nil, fmt.Errorf("annotation %q cannot be used with an internal load balancer", ServiceAnnotationLoadBalancerIPAddress)
+	}
 	logLBPhaseDone(serviceName, "resolveServiceOptions", "")
 
 	logLBPhaseStart(serviceName, "ensureLoadBalancer")
@@ -79,11 +108,21 @@ func (l *LbaasV2) EnsureLoadBalancer(ctx context.Context, clusterName string, ap
 	legacyName := l.GetLoadBalancerLegacyName(ctx, clusterName, apiService)
 
 	loadbalancer, err := getLoadbalancerByName(ctx, l.client, name, legacyName)
+	var staticIP *staticIPSelection
 	if err != nil {
 		if !errors.Is(err, ErrNotFound) {
 			err = fmt.Errorf("error getting loadbalancer for Service %s: %w", serviceName, err)
 			logLBPhaseFailed(serviceName, "ensureLoadBalancer", err)
 			return nil, err
+		}
+		if requestedIP != nil {
+			staticIP, err = l.resolveStaticIP(ctx, requestedIP, nil)
+			if err != nil {
+				logLBPhaseFailed(serviceName, "resolveStaticIP", err)
+				return nil, err
+			}
+			opts.VIPPortID = staticIP.ReservedVIPPortID
+			opts.SecurityGroupSubnetID = staticIP.ReservedVIPSubnetID
 		}
 
 		klog.V(2).Infof("[LB][%s] Creating loadbalancer %s", serviceName, name)
@@ -94,6 +133,15 @@ func (l *LbaasV2) EnsureLoadBalancer(ctx context.Context, clusterName string, ap
 			return nil, err
 		}
 	} else {
+		if requestedIP != nil {
+			staticIP, err = l.resolveStaticIP(ctx, requestedIP, loadbalancer)
+			if err != nil {
+				logLBPhaseFailed(serviceName, "resolveStaticIP", err)
+				return nil, err
+			}
+			opts.VIPPortID = staticIP.ReservedVIPPortID
+			opts.SecurityGroupSubnetID = staticIP.ReservedVIPSubnetID
+		}
 		klog.V(2).Infof("[LB][%s] LoadBalancer %s already exists", serviceName, loadbalancer.Name)
 	}
 	logLBPhaseDone(serviceName, "ensureLoadBalancer", "")
@@ -157,13 +205,19 @@ func (l *LbaasV2) EnsureLoadBalancer(ctx context.Context, clusterName string, ap
 
 	address := loadbalancer.VipAddress
 	if !opts.Internal {
-		logLBPhaseStart(serviceName, "ensureFloatingIP")
-		address, err = l.ensureServiceFloatingIP(ctx, apiService, loadbalancer, opts)
-		if err != nil {
-			logLBPhaseFailed(serviceName, "ensureFloatingIP", err)
-			return nil, err
+		if staticIP != nil && staticIP.ReservedVIPPortID != "" {
+			if !address.Equal(requestedIP) {
+				return nil, fmt.Errorf("load balancer returned IP %s, requested %s", address, requestedIP)
+			}
+		} else {
+			logLBPhaseStart(serviceName, "ensureFloatingIP")
+			address, err = l.ensureServiceFloatingIP(ctx, apiService, loadbalancer, opts, requestedIP)
+			if err != nil {
+				logLBPhaseFailed(serviceName, "ensureFloatingIP", err)
+				return nil, err
+			}
+			logLBPhaseDone(serviceName, "ensureFloatingIP", "(ip=%s)", address.String())
 		}
-		logLBPhaseDone(serviceName, "ensureFloatingIP", "(ip=%s)", address.String())
 	}
 
 	if opts.ManageSecurityGroups {
@@ -333,17 +387,7 @@ func (l *LbaasV2) resolveServiceOptions(ctx context.Context, svc *corev1.Service
 // createLoadBalancer creates a load balancer without listeners.
 // Listener, pool and member synchronization is handled in separate phases afterwards.
 func (l *LbaasV2) createLoadBalancer(ctx context.Context, name string, opts *ServiceOptions) (*edgecloud.Loadbalancer, error) {
-	createOpts := &edgecloud.LoadbalancerCreateRequest{
-		Name:   name,
-		Flavor: opts.FlavorID,
-	}
-
-	if opts.NetworkID != "" {
-		createOpts.VipNetworkID = opts.NetworkID
-	}
-	if opts.SubnetID != "" {
-		createOpts.VipSubnetID = opts.SubnetID
-	}
+	createOpts := buildLoadBalancerCreateRequest(name, opts)
 
 	klog.Infof("Creating load balancer %s with create request %+v", name, createOpts)
 
@@ -359,6 +403,24 @@ func (l *LbaasV2) createLoadBalancer(ctx context.Context, name string, opts *Ser
 	}
 
 	return lb, nil
+}
+
+func buildLoadBalancerCreateRequest(name string, opts *ServiceOptions) *edgecloud.LoadbalancerCreateRequest {
+	createOpts := &edgecloud.LoadbalancerCreateRequest{
+		Name:   name,
+		Flavor: opts.FlavorID,
+	}
+	if opts.VIPPortID != "" {
+		createOpts.VipPortID = opts.VIPPortID
+		return createOpts
+	}
+	if opts.NetworkID != "" {
+		createOpts.VipNetworkID = opts.NetworkID
+	}
+	if opts.SubnetID != "" {
+		createOpts.VipSubnetID = opts.SubnetID
+	}
+	return createOpts
 }
 
 // waitLoadbalancerActiveProvisioningStatus waits until the load balancer reaches ACTIVE provisioning state.
@@ -484,6 +546,14 @@ func (l *LbaasV2) deleteLoadBalancer(ctx context.Context, loadbalancerID string)
 // GetLoadBalancer returns whether the specified load balancer exists and, if it does,
 // returns its current ingress IP based on the LB VIP address.
 func (l *LbaasV2) GetLoadBalancer(ctx context.Context, clusterName string, service *corev1.Service) (*corev1.LoadBalancerStatus, bool, error) {
+	regionalLB, err := l.forService(service)
+	if err != nil {
+		return nil, false, err
+	}
+	return regionalLB.getLoadBalancer(ctx, clusterName, service)
+}
+
+func (l *LbaasV2) getLoadBalancer(ctx context.Context, clusterName string, service *corev1.Service) (*corev1.LoadBalancerStatus, bool, error) {
 	name := l.GetLoadBalancerName(ctx, clusterName, service)
 	legacyName := l.GetLoadBalancerLegacyName(ctx, clusterName, service)
 	loadbalancer, err := getLoadbalancerByName(ctx, l.client, name, legacyName)
@@ -492,6 +562,31 @@ func (l *LbaasV2) GetLoadBalancer(ctx context.Context, clusterName string, servi
 			return nil, false, nil
 		}
 		return nil, false, err
+	}
+	_, requestedIP, err := resolveServiceRegionAndIPAddress(service, l.edgecenter.RegionID)
+	if err != nil {
+		return nil, false, err
+	}
+	if requestedIP != nil {
+		staticIP, err := l.resolveStaticIP(ctx, requestedIP, loadbalancer)
+		if err != nil {
+			return nil, false, err
+		}
+		if staticIP.ReservedVIPPortID != "" {
+			return &corev1.LoadBalancerStatus{
+				Ingress: []corev1.LoadBalancerIngress{{IP: requestedIP.String()}},
+			}, true, nil
+		}
+		floatingIPs, err := edgecloudUtil.FloatingIPsListByPortID(ctx, l.client, loadbalancer.VipPortID)
+		if err != nil && !errors.Is(err, edgecloudUtil.ErrFloatingIPsNotFound) {
+			return nil, false, fmt.Errorf("failed to get floating IP for load balancer %s: %w", loadbalancer.ID, err)
+		}
+		if len(floatingIPs) != 1 || floatingIPs[0].FloatingIPAddress != requestedIP.String() {
+			return nil, false, nil
+		}
+		return &corev1.LoadBalancerStatus{
+			Ingress: []corev1.LoadBalancerIngress{{IP: requestedIP.String()}},
+		}, true, nil
 	}
 
 	status := &corev1.LoadBalancerStatus{
@@ -515,15 +610,15 @@ func (l *LbaasV2) GetLoadBalancerLegacyName(_ context.Context, _ string, service
 
 // ensureServiceFloatingIP ensures that the load balancer VIP port has a floating IP attached.
 // If the service already has a published ingress IP, it attempts to reuse it.
-func (l *LbaasV2) ensureServiceFloatingIP(ctx context.Context, svc *corev1.Service, lb *edgecloud.Loadbalancer, opts *ServiceOptions) (net.IP, error) {
-	var existingAddr net.IP
+func (l *LbaasV2) ensureServiceFloatingIP(ctx context.Context, svc *corev1.Service, lb *edgecloud.Loadbalancer, opts *ServiceOptions, requestedIP net.IP) (net.IP, error) {
+	existingAddr := requestedIP
 	var lbIP string
 
-	if len(svc.Status.LoadBalancer.Ingress) > 0 {
+	if existingAddr == nil && len(svc.Status.LoadBalancer.Ingress) > 0 {
 		lbIP = svc.Status.LoadBalancer.Ingress[0].IP
-	}
-	if lbIP != "" {
-		existingAddr = net.ParseIP(lbIP)
+		if lbIP != "" {
+			existingAddr = net.ParseIP(lbIP)
+		}
 	}
 
 	address, err := l.EnsureFloatingIP(ctx, l.client, false, lb.VipPortID, existingAddr)
@@ -545,8 +640,20 @@ func (l *LbaasV2) UpdateLoadBalancer(ctx context.Context, clusterName string, sv
 // EnsureLoadBalancerDeleted deletes the load balancer and all dependent resources
 // associated with the Service, including listeners, pools, floating IPs and security groups.
 func (l *LbaasV2) EnsureLoadBalancerDeleted(ctx context.Context, clusterName string, service *corev1.Service) error {
+	regionalLB, err := l.forService(service)
+	if err != nil {
+		return err
+	}
+	return regionalLB.ensureLoadBalancerDeleted(ctx, clusterName, service)
+}
+
+func (l *LbaasV2) ensureLoadBalancerDeleted(ctx context.Context, clusterName string, service *corev1.Service) error {
 	serviceName := fmt.Sprintf("%s/%s", service.Namespace, service.Name)
 	klog.V(4).Infof("EnsureLoadBalancerDeleted(%s, %s)", clusterName, serviceName)
+	_, requestedIP, err := resolveServiceRegionAndIPAddress(service, l.edgecenter.RegionID)
+	if err != nil {
+		return err
+	}
 
 	name := l.GetLoadBalancerName(ctx, clusterName, service)
 	legacyName := l.GetLoadBalancerLegacyName(ctx, clusterName, service)
@@ -590,6 +697,9 @@ func (l *LbaasV2) EnsureLoadBalancerDeleted(ctx context.Context, clusterName str
 	shouldSaveFIP, err := getBoolFromServiceAnnotation(service, ServiceAnnotationSaveFloating, false)
 	if err != nil {
 		return fmt.Errorf("cant get internal annotation: %w", err)
+	}
+	if requestedIP != nil {
+		shouldSaveFIP = true
 	}
 
 	ingress := service.Status.LoadBalancer.Ingress

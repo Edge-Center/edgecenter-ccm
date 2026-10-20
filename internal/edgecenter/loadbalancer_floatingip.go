@@ -47,7 +47,11 @@ func (l *LbaasV2) EnsureFloatingIP(ctx context.Context, client *edgecloud.Client
 
 	if len(fips) == 1 {
 		klog.Infof("Floating IP already exists for port %s: %s", portID, fips[0].FloatingIPAddress)
-		return net.ParseIP(fips[0].FloatingIPAddress), nil
+		assignedIP := net.ParseIP(fips[0].FloatingIPAddress)
+		if existingFIP != nil && (assignedIP == nil || !assignedIP.Equal(existingFIP)) {
+			return nil, fmt.Errorf("floating IP %s is already assigned to port %s, requested %s", fips[0].FloatingIPAddress, portID, existingFIP.String())
+		}
+		return assignedIP, nil
 	}
 
 	if existingFIP != nil {
