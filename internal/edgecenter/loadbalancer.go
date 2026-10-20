@@ -439,36 +439,27 @@ func getLoadbalancerByName(ctx context.Context, client *edgecloud.Client, name s
 	return &validLBs[0], nil
 }
 
-// prepareHealthMonitorOpts builds health monitor parameters for a service port.
-// If the protocol cannot be mapped to a supported monitor type, TCP is used as a safe default.
-func (l *LbaasV2) prepareHealthMonitorOpts(port corev1.ServicePort) *edgecloud.HealthMonitorCreateRequest {
-	monitorProtocol := edgecloud.HealthMonitorType(port.Protocol)
-	switch monitorProtocol {
-	case
-		edgecloud.HealthMonitorTypeHTTP,
-		edgecloud.HealthMonitorTypeHTTPS,
-		edgecloud.HealthMonitorTypePING,
-		edgecloud.HealthMonitorTypeTCP,
-		edgecloud.HealthMonitorTypeTLSHello,
-		edgecloud.HealthMonitorTypeUDPConnect:
+// resolveHealthMonitorType maps a Service port protocol to a health monitor type.
+// SCTP and unknown protocols fall back to TCP.
+func resolveHealthMonitorType(protocol corev1.Protocol) edgecloud.HealthMonitorType {
+	switch protocol {
+	case corev1.ProtocolUDP:
+		return edgecloud.HealthMonitorTypeUDPConnect
+	case corev1.ProtocolTCP:
+		return edgecloud.HealthMonitorTypeTCP
 	default:
-		monitorProtocol = edgecloud.HealthMonitorTypeTCP
+		return edgecloud.HealthMonitorTypeTCP
 	}
+}
 
-	opts := &edgecloud.HealthMonitorCreateRequest{
-		Type:       monitorProtocol,
+// prepareHealthMonitorOpts builds health monitor parameters for a service port.
+func (l *LbaasV2) prepareHealthMonitorOpts(port corev1.ServicePort) *edgecloud.HealthMonitorCreateRequest {
+	return &edgecloud.HealthMonitorCreateRequest{
+		Type:       resolveHealthMonitorType(port.Protocol),
 		Delay:      int(l.opts.MonitorDelay.Duration.Seconds()),
 		Timeout:    int(l.opts.MonitorTimeout.Duration.Seconds()),
 		MaxRetries: int(l.opts.MonitorMaxRetries),
 	}
-
-	if monitorProtocol == edgecloud.HealthMonitorTypeHTTP {
-		httpMethod := edgecloud.HTTPMethodGET
-		opts.HTTPMethod = &httpMethod
-		opts.URLPath = "/"
-	}
-
-	return opts
 }
 
 // deleteLoadBalancer deletes the load balancer and verifies that it no longer exists.
