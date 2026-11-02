@@ -287,3 +287,10 @@ spec:
       targetPort: 80
 ```
 In this example, the cloud controller will create an external HTTPS endpoint on port 443, terminate TLS with the certificate stored in secret with UUID e6b3b9f4-1234-4b7e-9fcd-abcdef012345, and send plain HTTP traffic to the pods on port 80.
+
+- `loadbalancer.edgecenter.com/region-id`
+
+  A positive cloud region ID configured in `NodeRegion` and `LoadBalancerRegion`.
+  Omit it to keep the primary region. No static IP annotation is required.
+  Create one Service per region; delete and wait for cleanup before changing
+  its region. See [multi-region configuration](multi-region-nodes.md).

@@ -344,13 +344,10 @@ func TestCheckEdgecenterOpts(t *testing.T) {
 	for _, testCase := range tests {
 		err := checkEdgecenterOpts(testCase.edgecenterOpts)
 
-		if err == nil && testCase.expectedError == nil {
-			continue
-		}
-
-		if err != nil || testCase.expectedError != nil || !errors.Is(err, testCase.expectedError) {
-			t.Errorf("%s failed: expected err=%q, got %q",
-				testCase.name, testCase.expectedError, err)
+		if testCase.expectedError == nil {
+			require.NoError(t, err, testCase.name)
+		} else {
+			require.EqualError(t, err, testCase.expectedError.Error(), testCase.name)
 		}
 	}
 }

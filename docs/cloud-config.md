@@ -131,3 +131,11 @@ Although the edgecenter-cloud-controller-manager was initially implemented with 
   Setting this option to true will create loadbalancers using serial API calls which first create an unpopulated
   loadbalancer, then populate its listeners, pools and members. This is a compatibility option at the expense of
   increased load on the OpenStack API. Default: false
+
+## Multi-region load balancers
+
+`[LoadBalancerRegion "<numeric-region-id>"]` supports `network-id`, `subnet-id`,
+`floating-network-id`, and `node-selector`. Add the same cloud region to
+`NodeRegion` for VM lookup and client selection. See
+[multi-region nodes and load balancers](multi-region-nodes.md) for complete
+configuration, rollout, filtering, and Service recreation requirements.

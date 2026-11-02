@@ -24,8 +24,8 @@ import (
 	"strings"
 
 	edgecloud "github.com/Edge-Center/edgecentercloud-go/v2"
-	edgecloudUtil "github.com/Edge-Center/edgecentercloud-go/v2/util"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/klog/v2"
@@ -36,6 +36,7 @@ import (
 // Instances encapsulates an implementation of Instances for Edgecenter.
 type Instances struct {
 	client         *edgecloud.Client
+	regions        *nodeRegionResolver
 	opts           MetadataOpts
 	networkingOpts NetworkingOpts
 }
@@ -63,7 +64,11 @@ func (i *Instances) AddSSHKeyToAllInstances(_ context.Context, _ string, _ []byt
 func (i *Instances) NodeAddresses(ctx context.Context, name types.NodeName) ([]corev1.NodeAddress, error) {
 	klog.V(4).Infof("NodeAddresses(%v) called", name)
 
-	addrs, err := getAddressesByName(ctx, i.client.Instances, name, i.networkingOpts)
+	instance, _, err := i.regionResolver().resolve(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: string(name)}})
+	if err != nil {
+		return nil, err
+	}
+	addrs, err := nodeAddresses(instance, i.networkingOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +86,7 @@ func (i *Instances) NodeAddressesByProviderID(ctx context.Context, providerID st
 		return []corev1.NodeAddress{}, err
 	}
 
-	instance, _, err := i.client.Instances.Get(ctx, instanceID)
+	instance, _, err := i.regionResolver().resolve(ctx, &corev1.Node{Spec: corev1.NodeSpec{ProviderID: buildProviderID(instanceID)}})
 	if err != nil {
 		return []corev1.NodeAddress{}, err
 	}
@@ -102,7 +107,11 @@ func (i *Instances) InstanceExistsByProviderID(ctx context.Context, providerID s
 		return false, err
 	}
 
-	return edgecloudUtil.ResourceIsExist(ctx, i.client.Instances.Get, instanceID)
+	_, _, err = i.regionResolver().resolve(ctx, &corev1.Node{Spec: corev1.NodeSpec{ProviderID: buildProviderID(instanceID)}})
+	if errors.Is(err, cloudprovider.InstanceNotFound) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // InstanceShutdownByProviderID returns true if the instances is in safe state to detach volumes
@@ -112,7 +121,7 @@ func (i *Instances) InstanceShutdownByProviderID(ctx context.Context, providerID
 		return false, err
 	}
 
-	instance, _, err := i.client.Instances.Get(ctx, instanceID)
+	instance, _, err := i.regionResolver().resolve(ctx, &corev1.Node{Spec: corev1.NodeSpec{ProviderID: buildProviderID(instanceID)}})
 	if err != nil {
 		return false, err
 	}
@@ -138,9 +147,9 @@ func (ec *Edgecenter) InstanceID() (string, error) {
 
 // InstanceID returns the cloud provider ID of the specified instance.
 func (i *Instances) InstanceID(ctx context.Context, name types.NodeName) (string, error) {
-	instance, err := getInstanceByName(ctx, i.client.Instances, name)
+	instance, _, err := i.regionResolver().resolve(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: string(name)}})
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, ErrNotFound) || errors.Is(err, cloudprovider.InstanceNotFound) {
 			return "", cloudprovider.InstanceNotFound
 		}
 		return "", err
@@ -158,7 +167,7 @@ func (i *Instances) InstanceTypeByProviderID(ctx context.Context, providerID str
 		return "", err
 	}
 
-	instance, _, err := i.client.Instances.Get(ctx, instanceID)
+	instance, _, err := i.regionResolver().resolve(ctx, &corev1.Node{Spec: corev1.NodeSpec{ProviderID: buildProviderID(instanceID)}})
 	if err != nil {
 		return "", err
 	}
@@ -168,7 +177,7 @@ func (i *Instances) InstanceTypeByProviderID(ctx context.Context, providerID str
 
 // InstanceType returns the type of the specified instance.
 func (i *Instances) InstanceType(ctx context.Context, name types.NodeName) (string, error) {
-	instance, err := getInstanceByName(ctx, i.client.Instances, name)
+	instance, _, err := i.regionResolver().resolve(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: string(name)}})
 
 	if err != nil {
 		return "", err
@@ -178,6 +187,9 @@ func (i *Instances) InstanceType(ctx context.Context, name types.NodeName) (stri
 }
 
 func srvInstanceType(instance *edgecloud.Instance) (string, error) {
+	if instance.Flavor == nil {
+		return "", fmt.Errorf("flavor missing for instance %s", instance.ID)
+	}
 	if instance.Flavor.FlavorID != "" {
 		return instance.Flavor.FlavorID, nil
 	}
@@ -210,40 +222,15 @@ func instanceIDFromProviderID(providerID string) (instanceID string, err error) 
 // instanceByNode resolves the backing cloud instance for the given Kubernetes node.
 // It prefers node.spec.providerID and falls back to lookup by node name.
 func (i *Instances) instanceByNode(ctx context.Context, node *corev1.Node) (*edgecloud.Instance, error) {
-	if node == nil {
-		return nil, fmt.Errorf("node is nil")
-	}
-
-	if node.Spec.ProviderID != "" {
-		instanceID, err := instanceIDFromProviderID(node.Spec.ProviderID)
-		if err != nil {
-			return nil, err
-		}
-
-		instance, _, err := i.client.Instances.Get(ctx, instanceID)
-		if err != nil {
-			return nil, err
-		}
-
-		return instance, nil
-	}
-
-	instance, err := getInstanceByName(ctx, i.client.Instances, types.NodeName(node.Name))
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, cloudprovider.InstanceNotFound
-		}
-		return nil, err
-	}
-
-	return instance, nil
+	instance, _, err := i.regionResolver().resolve(ctx, node)
+	return instance, err
 }
 
 // InstanceExists returns true if the instance backing the provided node still exists.
 func (i *Instances) InstanceExists(ctx context.Context, node *corev1.Node) (bool, error) {
 	instance, err := i.instanceByNode(ctx, node)
 	if err != nil {
-		if errors.Is(err, cloudprovider.InstanceNotFound) || errors.Is(err, ErrNotFound) {
+		if errors.Is(err, cloudprovider.InstanceNotFound) {
 			return false, nil
 		}
 		return false, err
@@ -265,7 +252,7 @@ func (i *Instances) InstanceShutdown(ctx context.Context, node *corev1.Node) (bo
 // InstanceMetadata returns cloud metadata for the provided node.
 // ProviderID is used by cloud-node-controller to initialize node.spec.providerID.
 func (i *Instances) InstanceMetadata(ctx context.Context, node *corev1.Node) (*cloudprovider.InstanceMetadata, error) {
-	instance, err := i.instanceByNode(ctx, node)
+	instance, region, err := i.regionResolver().resolve(ctx, node)
 	if err != nil {
 		return nil, err
 	}
@@ -282,6 +269,7 @@ func (i *Instances) InstanceMetadata(ctx context.Context, node *corev1.Node) (*c
 
 	return &cloudprovider.InstanceMetadata{
 		ProviderID:    buildProviderID(instance.ID),
+		Region:        metadataRegion(instance, region),
 		InstanceType:  instanceType,
 		NodeAddresses: addresses,
 	}, nil
