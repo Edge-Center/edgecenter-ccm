@@ -43,7 +43,7 @@ func testRegion(t *testing.T, name string, regionID int, status int, instances [
 		}
 		return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 	})
-	return nodeRegion{name: name, client: client}
+	return nodeRegion{name: name, regionID: regionID, projectID: 1, client: client}
 }
 
 func testRegionalNode() *corev1.Node {
@@ -154,11 +154,12 @@ func TestRegionalLoadBalancerUsesOnlyDefaultScope(t *testing.T) {
 	dm := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "dm-worker01", Labels: map[string]string{NodeRegionLabel: "default"}}}
 	dt := testRegionalNode()
 	dt.Labels = map[string]string{NodeRegionLabel: "dt"}
-	local, err := r.filterLoadBalancerNodes(context.Background(), []*corev1.Node{dt, dm})
+	l := &LbaasV2{nodeRegions: r}
+	local, err := l.selectServiceNodes(context.Background(), []*corev1.Node{dt, dm})
 	require.NoError(t, err)
 	require.Equal(t, []*corev1.Node{dm}, local)
 	dt.Labels[NodeRegionLabel] = "unknown"
-	_, err = r.filterLoadBalancerNodes(context.Background(), []*corev1.Node{dt, dm})
+	_, err = l.selectServiceNodes(context.Background(), []*corev1.Node{dt, dm})
 	require.Error(t, err)
 }
 

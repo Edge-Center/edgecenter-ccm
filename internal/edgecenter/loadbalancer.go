@@ -11,6 +11,7 @@ import (
 	edgecloud "github.com/Edge-Center/edgecentercloud-go/v2"
 	edgecloudUtil "github.com/Edge-Center/edgecentercloud-go/v2/util"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/klog/v2"
@@ -22,7 +23,9 @@ const defaultLBFlavor = "lb1-1-2"
 
 // LbaasV2 implements Kubernetes LoadBalancer operations using Edgecenter LBaaS v2.
 type LbaasV2 struct {
-	nodeRegions *nodeRegionResolver
+	nodeRegions  *nodeRegionResolver
+	scopeName    string
+	nodeSelector labels.Selector
 	LoadBalancer
 }
 
@@ -49,13 +52,13 @@ type ServiceOptions struct {
 
 // EnsureLoadBalancer creates or updates the load balancer for the Service.
 // The flow is split into phases: LB -> listeners -> pools -> pool members -> obsolete cleanup.
-func (l *LbaasV2) EnsureLoadBalancer(ctx context.Context, clusterName string, apiService *corev1.Service, nodes []*corev1.Node) (*corev1.LoadBalancerStatus, error) {
+func (l *LbaasV2) ensureLoadBalancer(ctx context.Context, clusterName string, apiService *corev1.Service, nodes []*corev1.Node) (*corev1.LoadBalancerStatus, error) {
 	serviceName := fmt.Sprintf("%s/%s", apiService.Namespace, apiService.Name)
 	klog.V(2).Infof("[LB] === START EnsureLoadBalancer for %s ===", serviceName)
 
 	if l.nodeRegions != nil {
 		var err error
-		nodes, err = l.nodeRegions.filterLoadBalancerNodes(ctx, nodes)
+		nodes, err = l.selectServiceNodes(ctx, nodes)
 		if err != nil {
 			return nil, fmt.Errorf("filter load balancer nodes: %w", err)
 		}
@@ -492,7 +495,7 @@ func (l *LbaasV2) deleteLoadBalancer(ctx context.Context, loadbalancerID string)
 
 // GetLoadBalancer returns whether the specified load balancer exists and, if it does,
 // returns its current ingress IP based on the LB VIP address.
-func (l *LbaasV2) GetLoadBalancer(ctx context.Context, clusterName string, service *corev1.Service) (*corev1.LoadBalancerStatus, bool, error) {
+func (l *LbaasV2) getLoadBalancer(ctx context.Context, clusterName string, service *corev1.Service) (*corev1.LoadBalancerStatus, bool, error) {
 	name := l.GetLoadBalancerName(ctx, clusterName, service)
 	legacyName := l.GetLoadBalancerLegacyName(ctx, clusterName, service)
 	loadbalancer, err := getLoadbalancerByName(ctx, l.client, name, legacyName)
@@ -553,7 +556,7 @@ func (l *LbaasV2) UpdateLoadBalancer(ctx context.Context, clusterName string, sv
 
 // EnsureLoadBalancerDeleted deletes the load balancer and all dependent resources
 // associated with the Service, including listeners, pools, floating IPs and security groups.
-func (l *LbaasV2) EnsureLoadBalancerDeleted(ctx context.Context, clusterName string, service *corev1.Service) error {
+func (l *LbaasV2) ensureLoadBalancerDeleted(ctx context.Context, clusterName string, service *corev1.Service) error {
 	serviceName := fmt.Sprintf("%s/%s", service.Namespace, service.Name)
 	klog.V(4).Infof("EnsureLoadBalancerDeleted(%s, %s)", clusterName, serviceName)
 

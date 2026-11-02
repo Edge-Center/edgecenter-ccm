@@ -24,8 +24,10 @@ type NodeRegionOpts struct {
 }
 
 type nodeRegion struct {
-	name   string
-	client *edgecloud.Client
+	name      string
+	regionID  int
+	projectID int
+	client    *edgecloud.Client
 }
 
 type nodeRegionResolver struct {
@@ -33,7 +35,7 @@ type nodeRegionResolver struct {
 }
 
 func newNodeRegionResolver(cfg Config, defaultClient *edgecloud.Client) (*nodeRegionResolver, error) {
-	r := &nodeRegionResolver{regions: []nodeRegion{{name: "default", client: defaultClient}}}
+	r := &nodeRegionResolver{regions: []nodeRegion{{name: "default", regionID: cfg.Edgecenter.RegionID, projectID: cfg.Edgecenter.ProjectID, client: defaultClient}}}
 	names := make([]string, 0, len(cfg.NodeRegion))
 	for name := range cfg.NodeRegion {
 		names = append(names, name)
@@ -60,7 +62,7 @@ func newNodeRegionResolver(cfg Config, defaultClient *edgecloud.Client) (*nodeRe
 			return nil, fmt.Errorf("NodeRegion %q: %w", name, err)
 		}
 		client.HTTPClient.Timeout = defaultClient.HTTPClient.Timeout
-		r.regions = append(r.regions, nodeRegion{name: name, client: client})
+		r.regions = append(r.regions, nodeRegion{name: name, regionID: regional.RegionID, projectID: regional.ProjectID, client: client})
 	}
 	return r, nil
 }
@@ -142,20 +144,4 @@ func metadataRegion(instance *edgecloud.Instance, region nodeRegion) string {
 		return region.name
 	}
 	return ""
-}
-
-// filterLoadBalancerNodes applies the same scope restriction to pool members and
-// security groups. Cross-region backends are deliberately not supported here.
-func (r *nodeRegionResolver) filterLoadBalancerNodes(ctx context.Context, nodes []*corev1.Node) ([]*corev1.Node, error) {
-	var local []*corev1.Node
-	for _, node := range nodes {
-		_, region, err := r.resolve(ctx, node)
-		if err != nil {
-			return nil, err
-		}
-		if region.name == "default" {
-			local = append(local, node)
-		}
-	}
-	return local, nil
 }

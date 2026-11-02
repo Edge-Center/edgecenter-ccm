@@ -51,8 +51,6 @@ func main() {
 	}
 	s.KubeCloudShared.CloudProvider.Name = edgecenter.ProviderName
 
-	fmt.Printf("Cloud Options %v\n", s)
-
 	klogFlags := goflag.NewFlagSet("klog", goflag.ExitOnError)
 	klog.InitFlags(klogFlags)
 	pflag.CommandLine.AddGoFlagSet(klogFlags)

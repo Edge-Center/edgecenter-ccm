@@ -1,10 +1,10 @@
 # Nodes in multiple regions
 
 CCM can manage node metadata and lifecycle across explicitly configured
-Edgecenter region/project scopes. Load balancers and their security groups stay
-in the primary `[Edgecenter]` scope; only nodes from that scope become backends.
-This does not add cross-region routing, cross-region load balancers, CSI volume
-attachment, or control-plane disaster recovery.
+Edgecenter region/project scopes. Load balancers default to the primary `[Edgecenter]` scope. A Service can select
+another configured region, with its own network settings and backend selector.
+This does not add cross-region routing, a single load balancer spanning regions,
+static IP reservation, CSI volume attachment, or control-plane disaster recovery.
 
 ## Configuration
 
@@ -68,11 +68,68 @@ discover regions that are absent from its configuration.
 
 ## Load balancers
 
-Both pool members and security-group reconciliation use the same filtered node
-list. DT nodes are excluded from DM load balancers. Unknown/ambiguous node
-identities cause an error before cloud resources are changed. If no primary-
-region nodes remain, reconciliation returns an error and does not create an
-empty pool; existing backends are not changed by that reconciliation attempt.
+The regional network and selector interface is adapted from
+[PR #20 by roquie](https://github.com/Edge-Center/edgecenter-ccm/pull/20), without
+its static-IP feature or dependency upgrades. A Service needs only `region-id`;
+there is no requirement for an `ip-address` annotation in this implementation.
+
+For a DT region with cloud ID `20`, also configured under `[NodeRegion "dt"]`:
+
+```ini
+[LoadBalancerRegion "20"]
+network-id=dt-network-id
+subnet-id=dt-subnet-id
+floating-network-id=dt-floating-network-id
+node-selector=edgecenter.com/node-region=dt
+```
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: example-dt
+  annotations:
+    loadbalancer.edgecenter.com/region-id: "20"
+    service.beta.kubernetes.io/edgecenter-internal-load-balancer: "true"
+spec:
+  type: LoadBalancer
+  selector:
+    app: example
+  ports:
+    - port: 8080
+      targetPort: 8080
+```
+
+Use actual cloud IDs for network settings, not the example names. A foreign
+region must have a `NodeRegion`, a `LoadBalancerRegion` with a non-empty selector,
+and an explicit network or subnet. Its client is reused from the configured
+node scopes, including the configured project. Region IDs appearing in several
+configured projects are ambiguous and cannot be selected by `region-id`.
+
+Foreign-region Services never inherit network/subnet/floating-network IDs from
+DM. Specify DT's network settings; for an external LB, set its floating network
+explicitly or allow discovery within DT. Primary-region Services keep their
+existing defaults. Service network/class annotations still override the network
+settings and must reference resources in the selected region.
+
+The node-selector first selects candidate nodes, then CCM resolves each VM using
+the node-region resolver. A selected node belonging to another actual configured
+scope causes an error **before any LB mutation**. A label such as `placement=dt`
+alone is not sufficient to override the resolved scope. Pool members and security
+groups receive the same verified list. API failures also stop reconciliation.
+
+Without a selector, primary-region LBs continue to exclude foreign-region nodes.
+If no suitable nodes remain, reconciliation returns an error instead of creating
+an empty pool; existing backends are not changed in that attempt. Lookup, update,
+and deletion use the same Service-selected regional client as creation.
+
+Use one Service per regional LB. Do not change `region-id` on an existing
+Service: there is no automatic migration or historical-region tracking. Delete
+it, wait for finalizer cleanup using the original annotation/configuration, then
+recreate it in the new region. Keep the regional configuration and token access
+until cleanup completes. Moving a Service without this sequence may orphan its
+old regional load balancer. Enforce immutability through your deployment or
+admission workflow if users can edit these annotations.
 
 With `externalTrafficPolicy: Cluster`, a DM backend can forward to pods on DT
 only if the CNI/data path supports it. With `Local`, only local ready endpoints
@@ -91,8 +148,9 @@ before moving workloads. This change does not make regional disks portable.
 4. Set node labels at registration, then join the DT worker. Check `providerID`,
    InternalIP, topology labels, Ready state and node UID across multiple lifecycle
    reconciliation intervals.
-5. Check Kafka/other LB pools contain only DM backend nodes and their health
-   monitors pass. Test service traffic and pod-to-pod traffic across regions.
+5. Check existing Kafka/DM LB pools contain only DM backend nodes; a DT Service
+   must contain only DT backend nodes. Check health monitors and service traffic,
+   and test pod-to-pod traffic across regions.
 6. In staging, test VM deletion, 403, API outages, duplicate names, and an unknown
    region label. Only a confirmed VM absence may remove the Kubernetes Node.
 
@@ -114,3 +172,7 @@ controller can otherwise resume deleting those Node objects.
 
 Tests use mocked HTTP responses through the real SDK. No production cloud or
 Kubernetes integration tests are performed by the local test suite.
+
+Cloud configuration is not printed in full. Logs use the existing allowlist of
+API endpoint, project ID, and region ID; API tokens are omitted. Go and Kubernetes
+dependency versions remain unchanged from the parent branch.

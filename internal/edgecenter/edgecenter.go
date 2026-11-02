@@ -27,6 +27,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -105,12 +106,13 @@ type LoadBalancer struct {
 
 // LoadBalancerOpts have the options to talk to Neutron LBaaSV2 or Octavia
 type LoadBalancerOpts struct {
-	LBVersion            string              `gcfg:"lb-version"`          // overrides autodetection. Only support v2.
-	UseOctavia           bool                `gcfg:"use-octavia"`         // uses Octavia V2 service catalog endpoint
-	SubnetID             string              `gcfg:"subnet-id"`           // overrides autodetection.
-	NetworkID            string              `gcfg:"network-id"`          // If specified, will create virtual ip from a subnet in network which has available IP addresses
-	FloatingNetworkID    string              `gcfg:"floating-network-id"` // If specified, will create floating ip for loadbalancer, or do not create floating ip.
-	FloatingSubnetID     string              `gcfg:"floating-subnet-id"`  // If specified, will create floating ip for loadbalancer in this particular floating pool subnetwork.
+	LBVersion            string `gcfg:"lb-version"`          // overrides autodetection. Only support v2.
+	UseOctavia           bool   `gcfg:"use-octavia"`         // uses Octavia V2 service catalog endpoint
+	SubnetID             string `gcfg:"subnet-id"`           // overrides autodetection.
+	NetworkID            string `gcfg:"network-id"`          // If specified, will create virtual ip from a subnet in network which has available IP addresses
+	FloatingNetworkID    string `gcfg:"floating-network-id"` // If specified, will create floating ip for loadbalancer, or do not create floating ip.
+	FloatingSubnetID     string `gcfg:"floating-subnet-id"`  // If specified, will create floating ip for loadbalancer in this particular floating pool subnetwork.
+	LBRegions            map[string]*LBRegion
 	LBClasses            map[string]*LBClass // Predefined named Floating networks and subnets
 	LBMethod             string              `gcfg:"lb-method"` // default to ROUND_ROBIN.
 	LBProvider           string              `gcfg:"lb-provider"`
@@ -214,14 +216,15 @@ type EdgecenterOpts struct {
 
 // Config is used to read and store information from the cloud configuration file
 type Config struct {
-	LoadBalancer      LoadBalancerOpts
-	LoadBalancerClass map[string]*LBClass
-	BlockStorage      BlockStorageOpts
-	Route             RouterOpts
-	Metadata          MetadataOpts
-	Networking        NetworkingOpts
-	Edgecenter        EdgecenterOpts
-	NodeRegion        map[string]*NodeRegionOpts
+	LoadBalancer       LoadBalancerOpts
+	LoadBalancerRegion map[string]*LBRegion
+	LoadBalancerClass  map[string]*LBClass
+	BlockStorage       BlockStorageOpts
+	Route              RouterOpts
+	Metadata           MetadataOpts
+	Networking         NetworkingOpts
+	Edgecenter         EdgecenterOpts
+	NodeRegion         map[string]*NodeRegionOpts
 }
 
 func LogCfg(cfg Config) {
@@ -240,7 +243,7 @@ func init() {
 			klog.Infof("Error reading config: %v", err)
 		}
 
-		klog.Infof("Config after read %v", cfg)
+		LogCfg(cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -266,8 +269,6 @@ func ReadConfig(config io.Reader) (Config, error) {
 		return Config{}, err
 	}
 
-	klog.Infof("CONFIG %v", cfg.Edgecenter)
-
 	klog.V(5).Infof("Config, loaded from the config file:")
 	LogCfg(cfg)
 
@@ -283,6 +284,13 @@ func ReadConfig(config io.Reader) (Config, error) {
 	// ini file doesn't support maps, so we are reusing top level subsections
 	// and copy the resulting map to corresponding loadbalancer section
 	cfg.LoadBalancer.LBClasses = cfg.LoadBalancerClass
+	for name, region := range cfg.LoadBalancerRegion {
+		id, err := strconv.Atoi(name)
+		if err != nil || id <= 0 || strconv.Itoa(id) != name || region == nil {
+			return Config{}, fmt.Errorf("LoadBalancerRegion section name %q must be a canonical positive region ID", name)
+		}
+	}
+	cfg.LoadBalancer.LBRegions = cfg.LoadBalancerRegion
 
 	return cfg, err
 }
