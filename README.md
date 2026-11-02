@@ -1,5 +1,7 @@
 # Kubernetes Cloud Provider for Edgecenter Cloud
 
+For clusters with nodes in multiple regions, see [multi-region node configuration](docs/multi-region-nodes.md).
+
 The Edgecenter Cloud Controller Manager provides the interface between a Kubernetes cluster and Edgecenter Cloud service APIs.
 This project allows a Kubernetes cluster to provision, monitor, and remove Edgecenter Cloud resources necessary for the operation of the cluster.
 

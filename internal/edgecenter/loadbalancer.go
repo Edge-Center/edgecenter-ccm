@@ -22,6 +22,7 @@ const defaultLBFlavor = "lb1-1-2"
 
 // LbaasV2 implements Kubernetes LoadBalancer operations using Edgecenter LBaaS v2.
 type LbaasV2 struct {
+	nodeRegions *nodeRegionResolver
 	LoadBalancer
 }
 
@@ -51,6 +52,14 @@ type ServiceOptions struct {
 func (l *LbaasV2) EnsureLoadBalancer(ctx context.Context, clusterName string, apiService *corev1.Service, nodes []*corev1.Node) (*corev1.LoadBalancerStatus, error) {
 	serviceName := fmt.Sprintf("%s/%s", apiService.Namespace, apiService.Name)
 	klog.V(2).Infof("[LB] === START EnsureLoadBalancer for %s ===", serviceName)
+
+	if l.nodeRegions != nil {
+		var err error
+		nodes, err = l.nodeRegions.filterLoadBalancerNodes(ctx, nodes)
+		if err != nil {
+			return nil, fmt.Errorf("filter load balancer nodes: %w", err)
+		}
+	}
 
 	if len(nodes) == 0 {
 		err := fmt.Errorf("there are no available nodes for LoadBalancer service %s", serviceName)

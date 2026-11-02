@@ -15,6 +15,7 @@ import (
 	"k8s.io/apiserver/pkg/server/healthz"
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/cloud-provider/app"
+	"k8s.io/cloud-provider/names"
 	"k8s.io/cloud-provider/options"
 	"k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/logs"
@@ -33,12 +34,16 @@ func init() {
 
 var versionFlag bool
 
+func controllerConfiguration() ([]string, map[string]string) {
+	return app.ControllerNames(app.DefaultInitFuncConstructors), names.CCMControllerAliases()
+}
+
 func main() {
 	defer panicutil.HandlePanic("main")
 
 	rand.Seed(time.Now().UTC().UnixNano())
 
-	controllerList := []string{"cloud-node", "cloud-node-lifecycle", "service", "route"}
+	controllerList, controllerAliases := controllerConfiguration()
 
 	s, err := options.NewCloudControllerManagerOptions()
 	if err != nil {
@@ -81,7 +86,7 @@ func main() {
 
 			logMetricsEndpointFromFlags(cmd.Flags())
 
-			c, err := s.Config(controllerList, app.ControllersDisabledByDefault.List(), nil, nil, nil)
+			c, err := s.Config(controllerList, app.ControllersDisabledByDefault.List(), controllerAliases, nil, nil)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%v\n", err)
 				os.Exit(1)
@@ -106,7 +111,7 @@ func main() {
 	}
 
 	fs := command.Flags()
-	namedFlagSets := s.Flags(controllerList, app.ControllersDisabledByDefault.List(), nil, nil, nil)
+	namedFlagSets := s.Flags(controllerList, app.ControllersDisabledByDefault.List(), controllerAliases, nil, nil)
 	for _, f := range namedFlagSets.FlagSets {
 		fs.AddFlagSet(f)
 	}
