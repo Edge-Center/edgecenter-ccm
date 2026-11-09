@@ -139,6 +139,21 @@
   Reference to a tls secret. This option works with Octavia, when this option is set then the cloud provider will create an Octavia Listener of type `TERMINATED_HTTPS` for a TLS Terminated loadbalancer.
   Format for tls container ref: `{secret_uuid}`
 
+- `loadbalancer.edgecenter.com/tls-secret-mode`
+
+  Controls how `default-tls-container-ref` is resolved. Supported values:
+
+  - `mkaas` (default): translate the user secret through the MKaaS cluster API
+    into its technical secret ID, preserving existing managed-cluster behavior.
+  - `direct`: pass the cloud secret UUID directly to the LB listener API.
+    Use this for self-managed clusters with no MKaaS cluster record. The secret
+    must already be usable in the project and region selected for this Service;
+    this mode does not copy certificates across projects or regions.
+
+  Unknown modes fail reconciliation. MKaaS API errors never implicitly switch
+  to direct mode. An empty translated secret ID also fails reconciliation rather
+  than silently provisioning a listener without TLS termination.
+
 - `loadbalancer.edgecenter.com/load-balancer-id`
 
   This annotation is automatically added to the Service if it's not specified when creating. After the Service is created successfully it shouldn't be changed, otherwise the Service won't behave as expected.
@@ -287,6 +302,19 @@ spec:
       targetPort: 80
 ```
 In this example, the cloud controller will create an external HTTPS endpoint on port 443, terminate TLS with the certificate stored in secret with UUID e6b3b9f4-1234-4b7e-9fcd-abcdef012345, and send plain HTTP traffic to the pods on port 80.
+
+For a self-managed cluster, add the following annotation alongside the secret
+reference:
+
+```yaml
+loadbalancer.edgecenter.com/tls-secret-mode: "direct"
+```
+
+This avoids calling the MKaaS cluster-secret endpoint with an artificial
+`cluster-id`. Cloud API authorization and certificate ownership checks still
+apply. The certificate must match the external DNS name. Listener and pool
+replacement may briefly interrupt access; this does not require deleting the
+Service or changing its regional placement.
 
 - `loadbalancer.edgecenter.com/region-id`
 

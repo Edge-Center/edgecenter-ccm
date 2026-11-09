@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	edgecloud "github.com/Edge-Center/edgecentercloud-go/v2"
 	corev1 "k8s.io/api/core/v1"
@@ -44,8 +45,8 @@ func (l *LbaasV2) resolveTechSecretID(ctx context.Context, secretID string) (str
 	return secretResp.SecretId, nil
 }
 
-// getSecretID resolves a client-facing secret ID from the Service annotation
-// into the corresponding internal tech secret ID used by Edgecenter LB APIs.
+// getSecretID resolves a Service TLS secret. MKaaS translation remains the default;
+// direct mode explicitly selects a cloud secret in the load balancer's own scope.
 func (l *LbaasV2) getSecretID(ctx context.Context, svc *corev1.Service) (string, error) {
 	clientSecretID := getStringFromServiceAnnotation(svc, ServiceAnnotationLoadBalancerDefaultTLSContainerRef, "")
 	if clientSecretID == "" {
@@ -53,11 +54,27 @@ func (l *LbaasV2) getSecretID(ctx context.Context, svc *corev1.Service) (string,
 	}
 
 	svcRef := fmt.Sprintf("%s/%s", svc.Namespace, svc.Name)
+	mode := strings.TrimSpace(getStringFromServiceAnnotation(svc, ServiceAnnotationLoadBalancerTLSSecretMode, "mkaas"))
+	switch mode {
+	case "direct":
+		// Self-managed clusters have no MKaaS cluster record. Their credentials
+		// already address the project/region that owns the certificate and LB.
+		// The LB API still validates the secret's ownership and permissions.
+		return clientSecretID, nil
+	case "mkaas":
+		// Preserve translation for managed clusters; never silently fall back
+		// to direct mode on API errors, including cluster-not-found responses.
+	default:
+		return "", fmt.Errorf("invalid %s value %q for service %s: use mkaas or direct", ServiceAnnotationLoadBalancerTLSSecretMode, mode, svcRef)
+	}
 	klog.V(4).Infof("TLS secret ID %s found for service %s", clientSecretID, svcRef)
 
 	techSecretID, err := l.resolveTechSecretID(ctx, clientSecretID)
 	if err != nil {
 		return "", fmt.Errorf("failed to get tech secret for service %s: %w", svcRef, err)
+	}
+	if strings.TrimSpace(techSecretID) == "" {
+		return "", fmt.Errorf("empty tech secret ID returned for service %s", svcRef)
 	}
 
 	klog.V(4).Infof("Tech secret ID %s obtained for client secret %s", techSecretID, clientSecretID)
