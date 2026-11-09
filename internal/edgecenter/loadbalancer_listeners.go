@@ -38,6 +38,23 @@ func (l *LbaasV2) ensureLoadBalancerListeners(ctx context.Context, loadbalancer 
 
 		listener := findListenerForServicePort(existing, port, opts)
 		if listener == nil {
+			// A listener's protocol is immutable. TCP, HTTP, HTTPS and
+			// TERMINATED_HTTPS all occupy the same TCP frontend port, so
+			// creating the replacement first would fail with HTTP 409.
+			// Delete only the conflicting listener and its pool; leave the
+			// load balancer, VIP and unrelated frontend ports untouched.
+			for {
+				conflict := findConflictingListener(existing, port, opts)
+				if conflict == nil {
+					break
+				}
+				id := conflict.ID
+				klog.Infof("Replacing listener %s on port %d: %s -> %s", id, port.Port, conflict.Protocol, listenerProtocol)
+				if err := l.ensureListenerDeleted(ctx, loadbalancer, conflict); err != nil {
+					return nil, nil, fmt.Errorf("failed removing conflicting listener for key=%s: %w", key, err)
+				}
+				existing = popListener(existing, id)
+			}
 			createReq := buildListenerCreateRequest(loadbalancer.ID, loadbalancer.Name, port, opts)
 
 			klog.V(4).Infof("Creating listener for key=%s port=%d protocol=%s", key, int(port.Port), listenerProtocol)
@@ -50,18 +67,20 @@ func (l *LbaasV2) ensureLoadBalancerListeners(ctx context.Context, loadbalancer 
 				return nil, nil, fmt.Errorf("LB not ACTIVE after listener create for key=%s: %v", key, err)
 			}
 
-			listener, err = l.getListenerByID(ctx, listener.ID)
+			id := listener.ID
+			listener, err = l.getListenerByID(ctx, id)
 			if err != nil {
-				return nil, nil, fmt.Errorf("failed to reload listener %s: %v", listener.ID, err)
+				return nil, nil, fmt.Errorf("failed to reload listener %s: %v", id, err)
 			}
 		} else {
 			if err := l.updateListenerIfNeeded(ctx, loadbalancer.ID, listener, port, opts); err != nil {
 				return nil, nil, fmt.Errorf("failed updating listener for key=%s: %w", key, err)
 			}
 
-			listener, err = l.getListenerByID(ctx, listener.ID)
+			id := listener.ID
+			listener, err = l.getListenerByID(ctx, id)
 			if err != nil {
-				return nil, nil, fmt.Errorf("failed to reload listener %s after update: %v", listener.ID, err)
+				return nil, nil, fmt.Errorf("failed to reload listener %s after update: %v", id, err)
 			}
 		}
 
@@ -126,6 +145,33 @@ func findListenerForServicePort(existing []edgecloud.Listener, sp corev1.Service
 	}
 
 	return nil
+}
+
+// findConflictingListener finds a different listener protocol that occupies the
+// desired transport/port. TCP and UDP listeners may coexist on the same number.
+func findConflictingListener(existing []edgecloud.Listener, sp corev1.ServicePort, opts *ServiceOptions) *edgecloud.Listener {
+	want := resolveListenerProtocol(sp.Protocol, opts.KeepClientIP, opts.SecretID)
+	for i := range existing {
+		ln := &existing[i]
+		if ln.ProtocolPort == int(sp.Port) && ln.Protocol != want &&
+			listenerTransportProtocol(ln.Protocol) != "" &&
+			listenerTransportProtocol(ln.Protocol) == listenerTransportProtocol(want) {
+			return ln
+		}
+	}
+	return nil
+}
+
+func listenerTransportProtocol(protocol edgecloud.LoadbalancerListenerProtocol) corev1.Protocol {
+	switch protocol {
+	case edgecloud.ListenerProtocolTCP, edgecloud.ListenerProtocolHTTP,
+		edgecloud.ListenerProtocolHTTPS, edgecloud.ListenerProtocolTerminatedHTTPS:
+		return corev1.ProtocolTCP
+	case edgecloud.ListenerProtocolUDP:
+		return corev1.ProtocolUDP
+	default:
+		return ""
+	}
 }
 
 // buildListenerCreateRequest builds a listener create request for the given Service port.
@@ -205,6 +251,11 @@ func (l *LbaasV2) ensureListenerDeleted(ctx context.Context, loadbalancer *edgec
 	}
 
 	if pool != nil {
+		for _, ref := range pool.Listeners {
+			if ref.ID != "" && ref.ID != listener.ID {
+				return fmt.Errorf("refusing to delete pool %s shared with listener %s while replacing listener %s", pool.ID, ref.ID, listener.ID)
+			}
+		}
 		klog.V(4).Infof("Deleting obsolete pool %s for listener %s", pool.ID, listener.ID)
 
 		err = l.deletePoolWithRetry(ctx, loadbalancer.ID, pool.ID)

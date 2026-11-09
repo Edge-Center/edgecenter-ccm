@@ -27,6 +27,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	"github.com/spf13/pflag"
 	"gopkg.in/gcfg.v1"
 	apiv1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	netutil "k8s.io/apimachinery/pkg/util/net"
 	certutil "k8s.io/client-go/util/cert"
@@ -104,12 +106,13 @@ type LoadBalancer struct {
 
 // LoadBalancerOpts have the options to talk to Neutron LBaaSV2 or Octavia
 type LoadBalancerOpts struct {
-	LBVersion            string              `gcfg:"lb-version"`          // overrides autodetection. Only support v2.
-	UseOctavia           bool                `gcfg:"use-octavia"`         // uses Octavia V2 service catalog endpoint
-	SubnetID             string              `gcfg:"subnet-id"`           // overrides autodetection.
-	NetworkID            string              `gcfg:"network-id"`          // If specified, will create virtual ip from a subnet in network which has available IP addresses
-	FloatingNetworkID    string              `gcfg:"floating-network-id"` // If specified, will create floating ip for loadbalancer, or do not create floating ip.
-	FloatingSubnetID     string              `gcfg:"floating-subnet-id"`  // If specified, will create floating ip for loadbalancer in this particular floating pool subnetwork.
+	LBVersion            string `gcfg:"lb-version"`          // overrides autodetection. Only support v2.
+	UseOctavia           bool   `gcfg:"use-octavia"`         // uses Octavia V2 service catalog endpoint
+	SubnetID             string `gcfg:"subnet-id"`           // overrides autodetection.
+	NetworkID            string `gcfg:"network-id"`          // If specified, will create virtual ip from a subnet in network which has available IP addresses
+	FloatingNetworkID    string `gcfg:"floating-network-id"` // If specified, will create floating ip for loadbalancer, or do not create floating ip.
+	FloatingSubnetID     string `gcfg:"floating-subnet-id"`  // If specified, will create floating ip for loadbalancer in this particular floating pool subnetwork.
+	LBRegions            map[string]*LBRegion
 	LBClasses            map[string]*LBClass // Predefined named Floating networks and subnets
 	LBMethod             string              `gcfg:"lb-method"` // default to ROUND_ROBIN.
 	LBProvider           string              `gcfg:"lb-provider"`
@@ -158,6 +161,7 @@ type MetadataOpts struct {
 // Edgecenter is an implementation of cloud provider interface for Edgecenter.
 type Edgecenter struct {
 	client         *edgecloud.Client
+	nodeRegions    *nodeRegionResolver
 	region         string
 	cfg            Config
 	lbOpts         LoadBalancerOpts
@@ -175,6 +179,7 @@ func (ec *Edgecenter) Instances() (cloudprovider.Instances, bool) {
 
 	return &Instances{
 		client:         ec.client,
+		regions:        ec.nodeRegions,
 		opts:           ec.metadataOpts,
 		networkingOpts: ec.networkingOpts,
 	}, true
@@ -186,6 +191,7 @@ func (ec *Edgecenter) InstancesV2() (cloudprovider.InstancesV2, bool) {
 
 	return &Instances{
 		client:         ec.client,
+		regions:        ec.nodeRegions,
 		opts:           ec.metadataOpts,
 		networkingOpts: ec.networkingOpts,
 	}, true
@@ -193,12 +199,13 @@ func (ec *Edgecenter) InstancesV2() (cloudprovider.InstancesV2, bool) {
 
 // EdgecenterOpts is used to talk to Edgecenter service
 type EdgecenterOpts struct {
-	ApiURL       string `gcfg:"api-url" mapstructure:"api-url"`
-	ProjectID    int    `gcfg:"project-id" mapstructure:"project-id"`
-	RegionID     int    `gcfg:"region-id" mapstructure:"region-id"`
-	ApiToken     string `gcfg:"api-token" mapstructure:"api-token"`
-	ClusterID    string `gcfg:"cluster-id" mapstructure:"cluster-id"`
-	NoBillingTag bool   `gcfg:"no-billing-tag" mapstructure:"no-billing-tag"` // default false
+	ApiURL         string `gcfg:"api-url" mapstructure:"api-url"`
+	ProjectID      int    `gcfg:"project-id" mapstructure:"project-id"`
+	RegionID       int    `gcfg:"region-id" mapstructure:"region-id"`
+	ApiToken       string `gcfg:"api-token" mapstructure:"api-token"`
+	ClusterID      string `gcfg:"cluster-id" mapstructure:"cluster-id"`
+	NodeRegionName string `gcfg:"node-region-name" mapstructure:"node-region-name"`
+	NoBillingTag   bool   `gcfg:"no-billing-tag" mapstructure:"no-billing-tag"` // default false
 
 	Region string `name:"os-region"`
 	CAFile string `gcfg:"ca-file" mapstructure:"ca-file" name:"os-certAuthorityPath" value:"optional"`
@@ -210,19 +217,22 @@ type EdgecenterOpts struct {
 
 // Config is used to read and store information from the cloud configuration file
 type Config struct {
-	LoadBalancer      LoadBalancerOpts
-	LoadBalancerClass map[string]*LBClass
-	BlockStorage      BlockStorageOpts
-	Route             RouterOpts
-	Metadata          MetadataOpts
-	Networking        NetworkingOpts
-	Edgecenter        EdgecenterOpts
+	LoadBalancer       LoadBalancerOpts
+	LoadBalancerRegion map[string]*LBRegion
+	LoadBalancerClass  map[string]*LBClass
+	BlockStorage       BlockStorageOpts
+	Route              RouterOpts
+	Metadata           MetadataOpts
+	Networking         NetworkingOpts
+	Edgecenter         EdgecenterOpts
+	NodeRegion         map[string]*NodeRegionOpts
 }
 
 func LogCfg(cfg Config) {
 	klog.V(5).Infof("Edgecenter ApiURL %s", cfg.Edgecenter.ApiURL)
 	klog.V(5).Infof("Edgecenter ProjectID %d", cfg.Edgecenter.ProjectID)
 	klog.V(5).Infof("Edgecenter RegionID %d", cfg.Edgecenter.RegionID)
+	klog.V(5).Infof("Edgecenter NodeRegionName %s", cfg.Edgecenter.NodeRegionName)
 }
 
 func init() {
@@ -235,7 +245,7 @@ func init() {
 			klog.Infof("Error reading config: %v", err)
 		}
 
-		klog.Infof("Config after read %v", cfg)
+		LogCfg(cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -261,8 +271,6 @@ func ReadConfig(config io.Reader) (Config, error) {
 		return Config{}, err
 	}
 
-	klog.Infof("CONFIG %v", cfg.Edgecenter)
-
 	klog.V(5).Infof("Config, loaded from the config file:")
 	LogCfg(cfg)
 
@@ -278,6 +286,13 @@ func ReadConfig(config io.Reader) (Config, error) {
 	// ini file doesn't support maps, so we are reusing top level subsections
 	// and copy the resulting map to corresponding loadbalancer section
 	cfg.LoadBalancer.LBClasses = cfg.LoadBalancerClass
+	for name, region := range cfg.LoadBalancerRegion {
+		id, err := strconv.Atoi(name)
+		if err != nil || id <= 0 || strconv.Itoa(id) != name || region == nil {
+			return Config{}, fmt.Errorf("LoadBalancerRegion section name %q must be a canonical positive region ID", name)
+		}
+	}
+	cfg.LoadBalancer.LBRegions = cfg.LoadBalancerRegion
 
 	return cfg, err
 }
@@ -415,9 +430,14 @@ func NewEdgecenter(cfg Config) (*Edgecenter, error) {
 	}
 
 	client.HTTPClient.Timeout = cfg.Metadata.RequestTimeout.Duration
+	regions, err := newNodeRegionResolver(cfg, client)
+	if err != nil {
+		return nil, err
+	}
 
 	gcr := Edgecenter{
 		client:         client,
+		nodeRegions:    regions,
 		region:         cfg.Edgecenter.Region,
 		cfg:            cfg,
 		lbOpts:         cfg.LoadBalancer,
@@ -462,7 +482,19 @@ func getInstanceByName(ctx context.Context, svc edgecloud.InstancesService, name
 		return nil, ErrNotFound
 	}
 
-	return &list[0], nil
+	var matches []edgecloud.Instance
+	for _, instance := range list {
+		if strings.EqualFold(instance.Name, string(name)) {
+			matches = append(matches, instance)
+		}
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("instance lookup for %q returned non-exact matches", name)
+	}
+	if len(matches) != 1 {
+		return nil, fmt.Errorf("ambiguous instance name %q: %d exact matches", name, len(matches))
+	}
+	return &matches[0], nil
 }
 
 func nodeAddresses(instance *edgecloud.Instance, networkingOpts NetworkingOpts) ([]apiv1.NodeAddress, error) {
@@ -563,7 +595,8 @@ func (ec *Edgecenter) LoadBalancer() (cloudprovider.LoadBalancer, bool) {
 	klog.V(1).Info("Claiming to support LoadBalancer")
 
 	return &LbaasV2{
-		LoadBalancer{
+		nodeRegions: ec.nodeRegions,
+		LoadBalancer: LoadBalancer{
 			client:     ec.client,
 			opts:       ec.lbOpts,
 			edgecenter: ec.cfg.Edgecenter,
@@ -597,45 +630,36 @@ func (ec *Edgecenter) GetZone(_ context.Context) (cloudprovider.Zone, error) {
 // GetZoneByProviderID implements Zones.GetZoneByProviderID
 // This is particularly useful in external cloud providers where the kubelet
 // does not initialize node data.
-func (ec *Edgecenter) GetZoneByProviderID(ctx context.Context, providerID string) (cloudprovider.Zone, error) {
-	instanceID, err := instanceIDFromProviderID(providerID)
-	if err != nil {
-		return cloudprovider.Zone{}, err
-	}
-
-	instance, _, err := ec.client.Instances.Get(ctx, instanceID)
-	if err != nil {
-		return cloudprovider.Zone{}, err
-	}
-
-	zone := cloudprovider.Zone{
-		Region: ec.region,
-	}
-
-	klog.V(4).Infof("The instance %s in zone %v", instance.Name, zone)
-
-	return zone, nil
+func (ec *Edgecenter) nodeInstances() *Instances {
+	return &Instances{client: ec.client, regions: ec.nodeRegions, opts: ec.metadataOpts, networkingOpts: ec.networkingOpts}
 }
 
-// GetZoneByNodeName implements Zones.GetZoneByNodeName
-// This is particularly useful in external cloud providers where the kubelet
-// does not initialize node data.
-func (ec *Edgecenter) GetZoneByNodeName(ctx context.Context, nodeName types.NodeName) (cloudprovider.Zone, error) {
-	instance, err := getInstanceByName(ctx, ec.client.Instances, nodeName)
+func (ec *Edgecenter) GetZoneByProviderID(ctx context.Context, providerID string) (cloudprovider.Zone, error) {
+	if providerID == "" {
+		return cloudprovider.Zone{}, fmt.Errorf("providerID is empty")
+	}
+	instance, region, err := ec.nodeInstances().regionResolver().resolve(ctx, &apiv1.Node{Spec: apiv1.NodeSpec{ProviderID: providerID}})
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return cloudprovider.Zone{}, cloudprovider.InstanceNotFound
-		}
 		return cloudprovider.Zone{}, err
 	}
+	return ec.instanceZone(instance, region), nil
+}
 
-	zone := cloudprovider.Zone{
-		Region: ec.region,
+// GetZoneByNodeName resolves the instance in the configured node regions.
+func (ec *Edgecenter) GetZoneByNodeName(ctx context.Context, nodeName types.NodeName) (cloudprovider.Zone, error) {
+	instance, region, err := ec.nodeInstances().regionResolver().resolve(ctx, &apiv1.Node{ObjectMeta: metav1.ObjectMeta{Name: string(nodeName)}})
+	if err != nil {
+		return cloudprovider.Zone{}, err
 	}
+	return ec.instanceZone(instance, region), nil
+}
 
-	klog.V(4).Infof("The instance %s in zone %v", instance.Name, zone)
-
-	return zone, nil
+func (ec *Edgecenter) instanceZone(instance *edgecloud.Instance, region nodeRegion) cloudprovider.Zone {
+	name := metadataRegion(instance, region)
+	if name == "" {
+		name = ec.region
+	}
+	return cloudprovider.Zone{Region: name}
 }
 
 // Routes initializes routes support
