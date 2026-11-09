@@ -199,12 +199,13 @@ func (ec *Edgecenter) InstancesV2() (cloudprovider.InstancesV2, bool) {
 
 // EdgecenterOpts is used to talk to Edgecenter service
 type EdgecenterOpts struct {
-	ApiURL       string `gcfg:"api-url" mapstructure:"api-url"`
-	ProjectID    int    `gcfg:"project-id" mapstructure:"project-id"`
-	RegionID     int    `gcfg:"region-id" mapstructure:"region-id"`
-	ApiToken     string `gcfg:"api-token" mapstructure:"api-token"`
-	ClusterID    string `gcfg:"cluster-id" mapstructure:"cluster-id"`
-	NoBillingTag bool   `gcfg:"no-billing-tag" mapstructure:"no-billing-tag"` // default false
+	ApiURL         string `gcfg:"api-url" mapstructure:"api-url"`
+	ProjectID      int    `gcfg:"project-id" mapstructure:"project-id"`
+	RegionID       int    `gcfg:"region-id" mapstructure:"region-id"`
+	ApiToken       string `gcfg:"api-token" mapstructure:"api-token"`
+	ClusterID      string `gcfg:"cluster-id" mapstructure:"cluster-id"`
+	NodeRegionName string `gcfg:"node-region-name" mapstructure:"node-region-name"`
+	NoBillingTag   bool   `gcfg:"no-billing-tag" mapstructure:"no-billing-tag"` // default false
 
 	Region string `name:"os-region"`
 	CAFile string `gcfg:"ca-file" mapstructure:"ca-file" name:"os-certAuthorityPath" value:"optional"`
@@ -231,6 +232,7 @@ func LogCfg(cfg Config) {
 	klog.V(5).Infof("Edgecenter ApiURL %s", cfg.Edgecenter.ApiURL)
 	klog.V(5).Infof("Edgecenter ProjectID %d", cfg.Edgecenter.ProjectID)
 	klog.V(5).Infof("Edgecenter RegionID %d", cfg.Edgecenter.RegionID)
+	klog.V(5).Infof("Edgecenter NodeRegionName %s", cfg.Edgecenter.NodeRegionName)
 }
 
 func init() {

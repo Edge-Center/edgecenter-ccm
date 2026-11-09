@@ -194,3 +194,106 @@ project-id=3
 	_, _, err = r.resolve(context.Background(), testRegionalNode())
 	require.ErrorContains(t, err, "ambiguous")
 }
+
+func TestPrimaryRegionAliasPreservesCanonicalScope(t *testing.T) {
+	cfg, err := ReadConfig(strings.NewReader(`[Edgecenter]
+api-url=https://cloud.invalid
+api-token=test
+project-id=1
+region-id=1
+node-region-name=dm
+[NodeRegion "dt"]
+region-id=2
+`))
+	require.NoError(t, err)
+	require.Equal(t, "dm", cfg.Edgecenter.NodeRegionName)
+	vm := testRegionalVM()
+	vm.Name, vm.Region = "dm-worker01", ""
+	primary := testRegion(t, "default", 1, http.StatusOK, []edgecloud.Instance{vm})
+	r, err := newNodeRegionResolver(cfg, primary.client)
+	require.NoError(t, err)
+	require.Len(t, r.regions, 2, "alias must not add a second API scope")
+	require.Same(t, primary.client, r.regions[0].client)
+	foreign := testRegion(t, "dt", 2, http.StatusOK, nil)
+	r.regions[1].client = foreign.client
+	primaryCalls, foreignCalls := 0, 0
+	primaryTransport := primary.client.HTTPClient.Transport
+	primary.client.HTTPClient.Transport = regionTransport(func(req *http.Request) (*http.Response, error) {
+		primaryCalls++
+		return primaryTransport.RoundTrip(req)
+	})
+	foreignTransport := foreign.client.HTTPClient.Transport
+	foreign.client.HTTPClient.Transport = regionTransport(func(req *http.Request) (*http.Response, error) {
+		foreignCalls++
+		return foreignTransport.RoundTrip(req)
+	})
+	for _, label := range []string{"dm", "default"} {
+		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: vm.Name, Labels: map[string]string{NodeRegionLabel: label}}}
+		_, scope, err := r.resolve(context.Background(), node)
+		require.NoError(t, err)
+		require.Equal(t, "default", scope.name, "LB filtering must keep the canonical primary scope")
+		require.Equal(t, 1, scope.regionID)
+		require.Empty(t, metadataRegion(&vm, scope), "alias must not change legacy region metadata")
+	}
+	require.Equal(t, 2, primaryCalls)
+	require.Zero(t, foreignCalls, "explicit alias must never query a different region")
+	primaryCalls = 0
+	_, _, err = r.resolve(context.Background(), &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: vm.Name}})
+	require.NoError(t, err)
+	require.Equal(t, 1, primaryCalls, "unlabelled lookup must not query the primary twice")
+	require.Equal(t, 1, foreignCalls)
+	_, _, err = r.resolve(context.Background(), &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: vm.Name, Labels: map[string]string{NodeRegionLabel: "unknown"}}})
+	require.ErrorContains(t, err, "unknown")
+	require.Equal(t, 1, primaryCalls, "unknown alias must fail before any lookup")
+	require.Equal(t, 1, foreignCalls)
+}
+
+func TestPrimaryRegionAliasValidationAndLegacyDefaults(t *testing.T) {
+	primary := testRegion(t, "default", 1, http.StatusOK, []edgecloud.Instance{testRegionalVM()})
+	for _, alias := range []string{"", "default", "dm"} {
+		cfg := Config{Edgecenter: EdgecenterOpts{ProjectID: 1, RegionID: 1, NodeRegionName: alias}}
+		r, err := newNodeRegionResolver(cfg, primary.client)
+		require.NoError(t, err)
+		require.Len(t, r.regions, 1)
+		node := testRegionalNode()
+		node.Labels = map[string]string{NodeRegionLabel: "dm"}
+		_, _, err = r.resolve(context.Background(), node)
+		if alias == "dm" {
+			require.NoError(t, err)
+		} else {
+			require.ErrorContains(t, err, "unknown")
+		}
+	}
+	for _, alias := range []string{" ", "dm/primary", "-dm", strings.Repeat("a", 64)} {
+		_, err := newNodeRegionResolver(Config{Edgecenter: EdgecenterOpts{NodeRegionName: alias}}, primary.client)
+		require.ErrorContains(t, err, "invalid Edgecenter node-region-name")
+	}
+	_, err := newNodeRegionResolver(Config{
+		Edgecenter: EdgecenterOpts{NodeRegionName: "dt"},
+		NodeRegion: map[string]*NodeRegionOpts{"dt": {RegionID: 2}},
+	}, primary.client)
+	require.ErrorContains(t, err, "conflicts with a NodeRegion section")
+	_, err = newNodeRegionResolver(Config{
+		Edgecenter: EdgecenterOpts{ProjectID: 1, RegionID: 1, NodeRegionName: "dm"},
+		NodeRegion: map[string]*NodeRegionOpts{"other": {ProjectID: 1, RegionID: 1}},
+	}, primary.client)
+	require.ErrorContains(t, err, "duplicate project/region")
+}
+
+func TestPrimaryRegionAliasPreservesAPIErrors(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusNotFound} {
+		primary := testRegion(t, "default", 1, status, nil)
+		r, err := newNodeRegionResolver(Config{Edgecenter: EdgecenterOpts{ProjectID: 1, RegionID: 1, NodeRegionName: "dm"}}, primary.client)
+		require.NoError(t, err)
+		node := testRegionalNode()
+		node.Spec.ProviderID = "edgecenter:///" + regionalTestID
+		node.Labels = map[string]string{NodeRegionLabel: "dm"}
+		_, _, err = r.resolve(context.Background(), node)
+		require.Error(t, err)
+		if status == http.StatusNotFound {
+			require.ErrorIs(t, err, cloudprovider.InstanceNotFound)
+		} else {
+			require.NotErrorIs(t, err, cloudprovider.InstanceNotFound, "403 must not permit node deletion")
+		}
+	}
+}

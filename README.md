@@ -23,6 +23,10 @@ Currently `edgecenter-cloud-controller-manager` implements:
 
 ## LoadBalancer Service Annotations
 
+For a primary region whose nodes use `edgecenter.com/node-region=dm`, set
+`node-region-name=dm` in `[Edgecenter]`. The canonical `default` label remains
+supported. See [multi-region configuration](docs/multi-region-nodes.md).
+
 The following annotations can be used to customize LoadBalancer behavior.
 
 | Annotation | Description | Create | Update | Notes |

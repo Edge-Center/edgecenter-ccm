@@ -155,3 +155,26 @@ func TestCloudConfigLogsDoNotContainToken(t *testing.T) {
 	require.NotContains(t, output.String(), "sentinel-secret-token")
 	require.Contains(t, output.String(), "RegionID")
 }
+
+func TestPrimaryAliasDoesNotChangeRegionalLoadBalancerFiltering(t *testing.T) {
+	l := regionalBalancer(t)
+	l.nodeRegions.primaryAlias = "dm"
+	dmVM := testRegionalVM()
+	dmVM.Name = "dm-worker01"
+	l.nodeRegions.regions[0] = testRegion(t, "default", 1, http.StatusOK, []edgecloud.Instance{dmVM})
+	dm := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: dmVM.Name, Labels: map[string]string{NodeRegionLabel: "dm"}}}
+	dt := testRegionalNode()
+	dt.Labels = map[string]string{NodeRegionLabel: "dt", "placement": "dt"}
+	for _, region := range []string{"", "1", "2"} {
+		regional, err := l.forService(regionalService(region))
+		require.NoError(t, err)
+		nodes, err := regional.selectServiceNodes(context.Background(), []*corev1.Node{dm, dt})
+		require.NoError(t, err)
+		if region == "2" {
+			require.Equal(t, []*corev1.Node{dt}, nodes)
+		} else {
+			require.Equal(t, []*corev1.Node{dm}, nodes)
+			require.Equal(t, "default", regional.scopeName)
+		}
+	}
+}

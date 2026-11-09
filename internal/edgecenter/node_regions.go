@@ -10,6 +10,7 @@ import (
 	edgecloud "github.com/Edge-Center/edgecentercloud-go/v2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	cloudprovider "k8s.io/cloud-provider"
 )
 
@@ -31,11 +32,24 @@ type nodeRegion struct {
 }
 
 type nodeRegionResolver struct {
-	regions []nodeRegion // default first, then named regions in deterministic order
+	regions      []nodeRegion // default first, then named regions in deterministic order
+	primaryAlias string       // optional label alias; the primary scope stays canonical "default"
 }
 
 func newNodeRegionResolver(cfg Config, defaultClient *edgecloud.Client) (*nodeRegionResolver, error) {
-	r := &nodeRegionResolver{regions: []nodeRegion{{name: "default", regionID: cfg.Edgecenter.RegionID, projectID: cfg.Edgecenter.ProjectID, client: defaultClient}}}
+	alias := cfg.Edgecenter.NodeRegionName
+	if errs := validation.IsValidLabelValue(alias); len(errs) > 0 {
+		return nil, fmt.Errorf("invalid Edgecenter node-region-name %q: %v", alias, errs)
+	}
+	if alias != "" && alias != "default" {
+		if _, exists := cfg.NodeRegion[alias]; exists {
+			return nil, fmt.Errorf("Edgecenter node-region-name %q conflicts with a NodeRegion section", alias)
+		}
+	}
+	r := &nodeRegionResolver{
+		regions:      []nodeRegion{{name: "default", regionID: cfg.Edgecenter.RegionID, projectID: cfg.Edgecenter.ProjectID, client: defaultClient}},
+		primaryAlias: alias,
+	}
 	names := make([]string, 0, len(cfg.NodeRegion))
 	for name := range cfg.NodeRegion {
 		names = append(names, name)
@@ -76,6 +90,9 @@ func (r *nodeRegionResolver) resolve(ctx context.Context, node *corev1.Node) (*e
 	}
 	regions := r.regions
 	if name, explicit := node.Labels[NodeRegionLabel]; explicit {
+		if r.primaryAlias != "" && name == r.primaryAlias {
+			name = "default"
+		}
 		regions = nil
 		for _, region := range r.regions {
 			if region.name == name {

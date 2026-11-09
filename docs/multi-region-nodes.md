@@ -18,6 +18,8 @@ api-token=<existing-token>
 project-id=100
 region-id=10
 cluster-id=<existing-cluster-id>
+# Optional alias for the primary region's existing node labels.
+node-region-name=dm
 
 [NodeRegion "dt"]
 region-id=20
@@ -27,8 +29,19 @@ project-id=100
 
 Additional regions reuse the primary API endpoint, token, CA/TLS settings,
 timeouts, and user agent. The existing token must have access to every scope.
-Names must be unique and cannot be `default`; duplicate region/project scopes
+NodeRegion section names must be unique and cannot be `default`; duplicate region/project scopes
 are rejected at startup. A single-region configuration remains valid unchanged.
+
+`[Edgecenter] node-region-name` optionally assigns an extra label alias to the
+primary scope. With `node-region-name=dm`, both `edgecenter.com/node-region=dm`
+and `edgecenter.com/node-region=default` select the same primary API client.
+No second region/project entry is created, and unlabelled lookups do not query
+the primary scope twice. Internally the scope remains `default`, so primary LB
+backend filtering and existing configurations retain their behavior.
+The alias must be a valid Kubernetes label value and must not match a named
+`[NodeRegion]` section. Omitting it preserves the old behavior: only
+`default` explicitly selects the primary scope. Unknown labels still fail;
+they never fall back to a different region.
 
 Prefer setting the region label through kubelet's `--node-labels` **before the
 node registers**:
@@ -37,11 +50,15 @@ node registers**:
 # DT node
 --node-labels=edgecenter.com/node-region=dt
 
-# DM node (the primary [Edgecenter] scope)
---node-labels=edgecenter.com/node-region=default
+# DM node (the primary [Edgecenter] scope with node-region-name=dm)
+--node-labels=edgecenter.com/node-region=dm
 ```
 
-These aliases select configuration sections; they are not inferred from a
+Existing `dm` labels and application nodeSelectors can stay unchanged when the
+primary alias is configured. Do not add `[NodeRegion "dm"]` with the primary
+project/region: duplicate scopes remain invalid.
+
+These aliases select configured scopes; they are not inferred from a
 hostname or from `topology.kubernetes.io/region`. A provider ID, when supplied,
 retains the compatible format `edgecenter:///<instance-uuid>`.
 
