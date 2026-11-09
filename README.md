@@ -55,6 +55,10 @@ The following annotations can be used to customize LoadBalancer behavior.
 ### Notes
 
 - Some changes (e.g. TLS or X-Forwarded-For) trigger **listener and pool recreation**, not in-place updates.
+- Protocol changes on an occupied frontend port delete the conflicting pool
+  and listener before creating their replacements. The load balancer and VIP
+  are retained, but the affected port is briefly unavailable. If creation fails,
+  the next reconciliation resumes from the current cloud state.
 - Network-related settings (`network-id`, VIP subnet) are **immutable after creation**.
 - Switching between internal and external LoadBalancers is **not fully reversible**.
 - Some annotations are defined but **not implemented yet**.

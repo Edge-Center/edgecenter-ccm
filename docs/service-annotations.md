@@ -316,6 +316,17 @@ apply. The certificate must match the external DNS name. Listener and pool
 replacement may briefly interrupt access; this does not require deleting the
 Service or changing its regional placement.
 
+When changing an existing frontend between TCP, HTTP, HTTPS and
+TERMINATED_HTTPS, CCM removes its bound pool and listener first and waits for
+cloud task completion and an ACTIVE load balancer before creating replacements.
+The existing load balancer and VIP are not deleted. UDP on the same port number
+does not conflict with TCP. Other ports are not removed as part of this early
+replacement; normal cleanup of ports absent from the Service still applies.
+CCM refuses early replacement if the pool is shared with another listener.
+Expect a short interruption on the affected port. Creation failures propagate,
+and the next reconciliation retries without deleting already-removed objects or
+duplicating a listener whose creation response was lost.
+
 - `loadbalancer.edgecenter.com/region-id`
 
   A positive cloud region ID configured in `NodeRegion` and `LoadBalancerRegion`.
