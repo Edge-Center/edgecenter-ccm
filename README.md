@@ -117,3 +117,8 @@ users:
   api-token=<api-token>
   cluster-id=<cluster-id>
 ```
+
+## License
+
+This project is licensed under the Apache License 2.0, see [LICENSE](LICENSE).
+Copyright (c) 2025 LLC "EDGECENTER"
